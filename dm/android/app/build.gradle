@@ -17,6 +17,21 @@ def generateStartupStrings = tasks.register('generateStartupStrings', Exec) {
     inputs.files('../tools/gen_strings.py', '../../i18n/ui_text.tsv', '../../ios/tools/dm_i18n.py')
     outputs.dir(startupStrings)
     commandLine(project.findProperty('dmPython') ?: 'python3', '../tools/gen_strings.py', '--output', startupStrings.get().asFile)
+    // 并排安装时给启动器名字加后缀（-PdmLabelSuffix=自编），两个图标才分得清；不带这个参数时产物不变。
+    // Append a suffix to the launcher name for side-by-side installs (-PdmLabelSuffix=...), so the two
+    // icons can be told apart; without the property the output is unchanged.
+    def labelSuffix = project.findProperty('dmLabelSuffix')
+    if (labelSuffix) {
+        doLast {
+            ['values', 'values-zh', 'values-pt'].each { folder ->
+                def f = new File(startupStrings.get().asFile, folder + '/strings.xml')
+                if (!f.isFile()) return
+                def text = f.getText('UTF-8')
+                text = text.replaceAll(/<string name="dmAndroidName">([^<]*)<\/string>/) { all, name -> '<string name="dmAndroidName">' + name + ' ' + labelSuffix + '</string>' }
+                f.setText(text, 'UTF-8')
+            }
+        }
+    }
 }
 
 // 复用仓库现有 iOS 图标，生成安卓资源，不重复提交图片。

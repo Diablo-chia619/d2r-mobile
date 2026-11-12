@@ -111,7 +111,10 @@ static int init_driver(void) {
             LOGE("DM_GPU_DRIVER=turnip 但没有内部目录（dm_vk_set_internal_dir 没被调用）");
         } else {
             char driver_dir[1200];
-            snprintf(driver_dir, sizeof driver_dir, "%s/gpu/turnip", g_internal);
+            // adrenotools 内部是 dir + name 直接拼接（driver.cpp:65 的 stat），中间不加斜杠，
+            // 所以这里必须带结尾斜杠，否则它会去找 .../turnipvulkan.purple.so 并静默返回 NULL。
+            // adrenotools concatenates dir + name without a separator, so the trailing slash is required.
+            snprintf(driver_dir, sizeof driver_dir, "%s/gpu/turnip/", g_internal);
             g_adrenotools = dlopen("libadrenotools.so", RTLD_NOW | RTLD_LOCAL);
             if (!g_adrenotools) {
                 LOGE("libadrenotools.so 加载失败: %s", dlerror());
@@ -124,6 +127,24 @@ static int init_driver(void) {
                     void *handle = open_fn(RTLD_NOW, ADRENOTOOLS_DRIVER_CUSTOM, NULL,
                                            g_hook_dir, driver_dir, "vulkan.purple.so", NULL, NULL);
                     if (!handle) {
+                        // 诊断：adrenotools 内部失败时不报原因，这里直接 dlopen 驱动本体与它的依赖，
+                        // 把 dlerror() 打出来（最常见的是依赖了 App 不允许加载的平台私有库）。
+                        // Diagnostics: adrenotools reports nothing on failure, so probe the driver and its
+                        // dependencies directly and log dlerror() (usually a platform-private library an
+                        // app is not allowed to load).
+                        char so[1400];
+                        snprintf(so, sizeof so, "%s/vulkan.purple.so", driver_dir);
+                        dlerror();
+                        void *probe = dlopen(so, RTLD_NOW | RTLD_LOCAL);
+                        const char *probe_err = dlerror();
+                        LOGE("诊断：dlopen(%s) -> %p, dlerror=%s", so, probe, probe_err ? probe_err : "(none)");
+                        const char *deps[] = {"libhardware.so", "libnativewindow.so", "libsync.so", NULL};
+                        for (int i = 0; deps[i]; ++i) {
+                            dlerror();
+                            void *h = dlopen(deps[i], RTLD_NOW | RTLD_LOCAL);
+                            const char *e = dlerror();
+                            LOGE("诊断：dlopen(%s) -> %p, dlerror=%s", deps[i], h, e ? e : "(none)");
+                        }
                         LOGE("adrenotools_open_libvulkan 返回 NULL（驱动文件不在 %s？）", driver_dir);
                     } else {
                         PFN_vkGetInstanceProcAddr gipa = (PFN_vkGetInstanceProcAddr)dlsym(handle, "vkGetInstanceProcAddr");
