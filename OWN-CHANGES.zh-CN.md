@@ -134,8 +134,10 @@ s->lx = ex * strength * DM_STICK_MAX;           // 游戏按幅度决定速度
 | 项 | 参数 | 说明 |
 |---|---|---|
 | 包名 | `-PdmAppId=com.xiaoboluo.d2r.own` | 与官方 `com.xiaoboluo.d2r` 不同，可同时装 |
-| 显示名 | `-PdmLabelSuffix=自编` | 图标下显示「D2R Mobile 自编」，两个图标分得清 |
+| 显示名 | 默认与官方一致「D2R Mobile」 | 需要区分时传 `-PdmLabelSuffix=自编`；不传就是原版名（放包里默认不传） |
 | 签名 | debug | 不能覆盖官方版；卸载会清 `files/save` 与 `files/dm`，先导出存档 |
+
+> 两个图标的显示名都是「D2R Mobile」时只能靠位置区分；命令行核对包名：`adb shell pm list packages | grep xiaoboluo`（官方 `com.xiaoboluo.d2r`、本包 `com.xiaoboluo.d2r.own`）。
 
 本机出包脚本：`build-apk-sbs.sh`（并排包 + 内置驱动 + 标签后缀）。注意必须用这个脚本，误用不带 `-PdmAppId` 的会出官方包名，安装时报 `INSTALL_FAILED_UPDATE_INCOMPATIBLE: signatures do not match`。
 
