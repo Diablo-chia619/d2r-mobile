@@ -118,9 +118,30 @@ final class SaveTransfer {
         byte[] buffer = new byte[1 << 16];
         try {
             for (File c : list) {
-                if (!c.isDirectory() || !(isCharacter(c) || isStash(c) || c.getName().equals("Settings"))) continue;
+                // 编年史侧文件（*.swvault）和 Elysium 名单（sw_elysium.txt）是存档根下的散文件：官方导出会带上，
+                // 但只认文件夹的导入会丢掉，编年史就“倒不过来”。
+                // The chronicle sidecar (*.swvault) and the Elysium list (sw_elysium.txt) are loose files at the save root:
+                // the export carries them, but an import that only looks at folders drops them, so the chronicle is lost.
+                boolean loose = c.isFile() && (c.getName().endsWith(".swvault") || c.getName().equals("sw_elysium.txt"));
+                if (!loose && (!c.isDirectory() || !(isCharacter(c) || isStash(c) || c.getName().equals("Settings")))) continue;
                 File dst = new File(save, c.getName());
                 if (dst.exists() && isStash(c)) { stashes.add(c); continue; }
+                // Elysium 名单是“名单”而不是覆盖文件：两边取并集写回，谁的名字都不丢
+                // The Elysium list is a list, not an overwrite: merge both sides so no name is lost
+                if (loose && c.getName().equals("sw_elysium.txt") && dst.isFile()) {
+                    java.util.LinkedHashSet<String> names = new java.util.LinkedHashSet<>();
+                    for (String line : new String(Files.readAllBytes(dst.toPath()), StandardCharsets.UTF_8).split("\n"))
+                        if (!line.trim().isEmpty()) names.add(line.trim());
+                    int before = names.size();
+                    for (String line : new String(Files.readAllBytes(c.toPath()), StandardCharsets.UTF_8).split("\n"))
+                        if (!line.trim().isEmpty()) names.add(line.trim());
+                    if (names.size() == before) { append(skipped, c.getName()); continue; }
+                    StringBuilder out = new StringBuilder();
+                    for (String n : names) out.append(n).append('\n');
+                    Files.write(dst.toPath(), out.toString().getBytes(StandardCharsets.UTF_8));
+                    append(added, c.getName() + "(合并)");
+                    continue;
+                }
                 if (dst.exists()) { append(skipped, c.getName()); continue; }
                 File tmp = new File(part, c.getName());
                 copyTree(c, tmp, buffer);
