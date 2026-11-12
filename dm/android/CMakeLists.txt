@@ -81,7 +81,18 @@ set(ANDROID_SRCS
   ${CMAKE_CURRENT_SOURCE_DIR}/compat/digest.c
   ${CMAKE_CURRENT_SOURCE_DIR}/compat/mach_thread.c
   ${CMAKE_CURRENT_SOURCE_DIR}/compat/mach_symbols.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/vk_runtime.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/vk_shim.c
   ${DM}/gfx/vulkan/nvn_vk.c)
+# 这两个文件定义的是 Vulkan 入口本身（vkCreateInstance 等）：必须隐藏可见性，
+# 否则系统 libvulkan.so 里同名的动态符号会抢先绑定，我们的转发体永远不被调用。
+# These two files define the Vulkan entry points themselves (vkCreateInstance and friends): their
+# visibility must be hidden, otherwise the same-named dynamic symbols in the system libvulkan.so win
+# and the forwarders are never called.
+set_source_files_properties(
+  ${CMAKE_CURRENT_SOURCE_DIR}/vk_runtime.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/vk_shim.c
+  PROPERTIES COMPILE_OPTIONS "-fvisibility=hidden")
 
 # 技能索引由玩家资源在仓外生成；公共只读桥复用同一套身份与过期校验。
 # Generate the skill index outside the repository from the player's files; share identity and freshness checks.

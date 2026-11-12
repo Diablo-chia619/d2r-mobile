@@ -22,6 +22,7 @@
 #include <errno.h>
 #include <jni.h>
 #include "vulkan_present.h"
+#include "vk_runtime.h"
 #include "touch_android.h"
 #include "lifecycle_dispatch.h"
 #include "overlay_validate.h"
@@ -209,6 +210,7 @@ JNIEXPORT jint JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeStart(JNIEnv *env
     mkdirs(g_runtime);
     log_init();
     load_env_file(g_runtime);
+    dm_vk_set_internal_dir(g_files);
     LOG("boot: 内部目录 %s，外部目录 %s，资源 %s，系统语言 %s", g_files, g_ext, g_src, lg);
     char romfs[1100], save[1100], temp[1100];
     snprintf(romfs, sizeof romfs, "%s/romfs", g_files); snprintf(save, sizeof save, "%s/save", g_files); snprintf(temp, sizeof temp, "%s/temp", g_files);

@@ -215,6 +215,32 @@ public class DmActivity extends Activity implements SurfaceHolder.Callback, Disp
         return null;
     }
 
+    // 把随 APK 打包的 Turnip 驱动解到内部目录（adrenotools 只肯从内部目录加载驱动）。
+    // 大小对得上就跳过；APK 里没打包驱动时什么也不做，系统驱动照常用。
+    // Unpack the Turnip driver shipped inside the APK into internal storage (adrenotools only loads
+    // drivers from internal storage). Skipped when the size already matches, and a no-op when the
+    // APK carries no driver at all.
+    private void extractGpuDriver() {
+        final String name = "vulkan.purple.so";
+        File dir = new File(getFilesDir(), "gpu/turnip");
+        File out = new File(dir, name);
+        try (java.util.zip.ZipFile apk = new java.util.zip.ZipFile(getApplicationInfo().sourceDir)) {
+            java.util.zip.ZipEntry entry = apk.getEntry("assets/turnip/" + name);
+            if (entry == null) return;
+            if (out.length() == entry.getSize()) return;
+            dir.mkdirs();
+            try (java.io.InputStream in = apk.getInputStream(entry);
+                 java.io.OutputStream os = new java.io.FileOutputStream(out)) {
+                byte[] buffer = new byte[1 << 16];
+                int n;
+                while ((n = in.read(buffer)) > 0) os.write(buffer, 0, n);
+            }
+            android.util.Log.i("dm", "gpu driver extracted: " + out.getAbsolutePath() + " " + out.length() + " bytes");
+        } catch (Exception e) {
+            android.util.Log.e("dm", "gpu driver extract failed: " + e);
+        }
+    }
+
     // true = 可以接着启动；false = 正在导入或已显示错误
     // true = startup can continue; false = importing, or an error is shown
     private boolean ensureImported(File source) {
@@ -341,6 +367,7 @@ public class DmActivity extends Activity implements SurfaceHolder.Callback, Disp
             File ext = getExternalFilesDir(null), internal = new File(getFilesDir(), "dm");
             File runtime = new File(internal, "out/main.patched.bin").canRead() || ext == null ? internal : new File(ext, "dm");
             try { Os.setenv("DM_DERIVED", new File(runtime, "derived.tsv").getAbsolutePath(), true); } catch (ErrnoException e) { showStartError(getString(R.string.dmAndroidStorage)); return; }
+            extractGpuDriver();
             try { System.loadLibrary("dm"); libraryLoaded = true; }
             catch (UnsatisfiedLinkError error) { showStartError(getString(R.string.dmAndroidLibrary)); return; }
         }

@@ -11,7 +11,16 @@ target_compile_features(dm_vulkan_engine PUBLIC cxx_std_17)
 target_compile_options(dm_vulkan_engine PRIVATE -O2 -fno-strict-aliasing -Wall -Wextra -Wno-missing-field-initializers -Wno-format)
 set_source_files_properties(${E}/xbg_texture.c PROPERTIES COMPILE_OPTIONS -fsigned-char)
 set_target_properties(dm_vulkan_engine PROPERTIES POSITION_INDEPENDENT_CODE ON)
-target_link_libraries(dm_vulkan_engine PUBLIC vulkan log)
+if(ANDROID)
+  # 安卓不链接系统 libvulkan：入口由宿主的 vk_shim.c（117 个转发体）+ vk_runtime.c 提供，
+  # 这样换驱动只是运行期的事；漏掉任何入口都会在链接期报 undefined reference，而不是运行时黑屏。
+  # Android does not link the system libvulkan: the entry points come from the host's vk_shim.c
+  # (117 forwarders) plus vk_runtime.c, so switching drivers stays a runtime decision; a forgotten
+  # entry point fails the link instead of turning into a black screen at runtime.
+  target_link_libraries(dm_vulkan_engine PUBLIC log)
+else()
+  target_link_libraries(dm_vulkan_engine PUBLIC vulkan log)
+endif()
 # 宿主工程先加入了 SPIRV-Tools（dm_spirv_opt，安卓）时，Adreno 750 的辅助函数内联才编进来（gfx-inline）。
 # Adreno 750 helper inlining (gfx-inline) is built in only when the host project added SPIRV-Tools first (dm_spirv_opt, Android).
 if(TARGET dm_spirv_opt)
