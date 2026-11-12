@@ -793,6 +793,39 @@ static void cube_diag_tick(uint64_t G, uint64_t player) {   // 合成请求后 2
 // All three "who is the controlled player" sites go by it: the per-tick feature entry hud_tick, the state dump state_dump, the position check poschk. A corpse left in the player table after the character dies is also a player-type unit with "mode ≠ 0 and coordinates",
 // so counting units present reports "living player + own corpse" as non-unique. That is a stale measuring criterion, not two players on the field
 static uint32_t local_player_id(void) { uint32_t slot = 8, lid = 0xffffffffu; module_t *mm = main_mod(); if (mm && tk_rd((uint64_t)mm->base + 0x2d20e4c, &slot, 4) && slot < 8) tk_rd((uint64_t)mm->base + 0x2d60380 + 4 * slot, &lid, 4); return lid; }
+// 探针：箭袋剩余弹药（最小版）。
+// 箭袋已经定位：装备格 5（[背包+0x20] → +0x18 的格子数组第 5 格，腰带是第 8 格，dm_beltauto.c 同口径），
+// 数量 = 物品自己的属性 stat 70（quantity，与本文件读回城书同一口径）。这一版只做一件事：
+// 每 15 拍读一次，数量变了写一行。
+// 上一版把 6 KB 的快照数组放在宿主栈上，而宿主线程栈很小——两次 CRASH 的 pc 都落在宿主代码里、addr 是野指针，
+// 首先怀疑栈被踩。这一版没有大数组，缓冲区全是静态的。
+// Probe: quiver ammo (minimal).
+// The quiver is located: equipment cell 5 (the cell array at [inventory+0x20] -> +0x18, cell 5; the belt is cell 8, same convention as dm_beltauto.c),
+// count = the item's own stat 70 (quantity, the same convention this file already uses for the town-portal tome).
+// This version does one thing only: read it once every 15 ticks and write a line when the count changed.
+// The previous version kept a 6 KB snapshot array on the host stack; the host thread stack is small and both CRASHes landed in host code
+// with a garbage addr, so a smashed stack is the prime suspect. Nothing big lives on the stack here; all buffers are static.
+static int ammo_ok(uint64_t u) {   // 单位地址是否可信：地址够高、8 字节对齐、数据块指针也有效 | Whether a unit address is trustworthy: high enough, 8-byte aligned, and its data block pointer valid
+    uint64_t d = 0;
+    if (u < 0x100000 || (u & 7)) return 0;
+    if (!tk_rd(u + 0x10, &d, 8) || d < 0x100000 || (d & 7)) return 0;
+    return 1;
+}
+
+static void ammo_probe(uint64_t pl, uint64_t inv) {
+    static int on = -1, prev = -1; static uint32_t last = 0;
+    if (on < 0) on = getenv("DM_DEBUG_AMMO") != NULL;
+    if (!on) return;
+    uint32_t now = cur_tick(); if (last && now - last < 15) return; last = now;   // 15 拍 ≈ 0.6 秒 | 15 ticks ~ 0.6 s
+    module_t *mm = main_mod(); if (!mm) return;
+    uint64_t pages = 0, eq = 0, q = 0;
+    if (!tk_rd(inv + 0x20, &pages, 8) || !pages) return;
+    if (!tk_rd(pages + 0x18, &eq, 8) || !eq) return;
+    if (!tk_rd(eq + 8 * 5, &q, 8) || !q || !ammo_ok(q)) return;   // 装备格 5 = 箭袋 | equipment cell 5 = quiver
+    int n = ((int (*)(uint64_t, int, int))(mm->base + 0x5b9290))(q, 70, 0);   // stat 70 = quantity
+    if (n != prev) { LOG("[ammo] 箭袋（装备格5）数量 %d → %d", prev, n); prev = n; }
+}
+
 static void hud_tick(uint64_t G) {        // 每拍：受控玩家等级 / 本级经验‰ / 腰带四列件数 / 回城次数 + 当前人数档 → g_hud（前端 dm_hud_get） | Every tick: controlled player's level / current-level experience ‰ / item counts of the four belt columns / town portal count + current /players setting → g_hud (front end dm_hud_get)
     dm_hud_info h = {0};
     uint64_t player = 0, inv = 0, u = 0, next = 0;
@@ -833,6 +866,7 @@ static void hud_tick(uint64_t G) {        // 每拍：受控玩家等级 / 本�
         // 卡死就是这样——服务端还挂着放进仓库的魔盒，原先拿服务端这一份当「手上有东西」，拖放收尾链一遍遍按返回关面板
         // Held item: this is the server-side player, for diagnostics only; h.holding takes the client's true value via dm_hud_get (dm_hud.c). If the two sides stay inconsistent (server cursor still holding, client hand empty), log a red line:
         // that is exactly the hang: the server still held the Horadric Cube that had been put into the stash, the old code took the server copy as "something in hand", and the drag-and-drop wrap-up chain kept pressing Back to close panels
+        ammo_probe(player, inv);
         { uint64_t cur = 0; tk_rd(inv + 0x40, &cur, 8);
           static uint64_t lcur; if (cur != lcur) { uint32_t id = 0; if (cur) tk_rd(cur + 8, &id, 4); LOG("手上物品（服务端）：%s（物品 id %u）", cur ? "拿着" : "空了", id); lcur = cur; }   // 每次变化记一行：「看不见的手上物品」排查用 | Logs one line on every change: for investigating the "invisible held item"
           static uint64_t mcur; static int mn; if (cur && !dm_hud_held()) { if (++mn == 50 && cur != mcur) { uint32_t id = 0; tk_rd(cur + 8, &id, 4); mcur = cur; LOG("【红】手上物品：服务端光标挂着物品（id %u）、客户端手上已空 2 秒——两端不一致，按客户端（手上空）处理", id); } } else mn = 0; }   // 非零 = 拿着；值随物品不同（dm_cursor 的「放不下往里挪」靠它认出换成了别的物品）   // 物品栏 +0x40 = 光标上拿着的物品（同 DM_STATE 的 cursor） | Nonzero = holding; the value differs per item (dm_cursor's "can't place, shift inward" relies on it to detect that the item was swapped for another)   // Inventory +0x40 = item held on the cursor (same as DM_STATE's cursor)
@@ -968,6 +1002,10 @@ static void hud_tick(uint64_t G) {        // 每拍：受控玩家等级 / 本�
     // 副手组技能（dm_actions.c）：发布服务端记的当前武器组 [[玩家+0x10]+0xf0]+0x5a0（换武器包尾要带它，服务端 0x6de790 比对）
     // Off-hand set skills (dm_actions.c): publish the current weapon set as recorded by the server [[player+0x10]+0xf0]+0x5a0 (the weapon swap packet must carry it at the end; the server's 0x6de790 compares it)
     { void dm_swapskill_srv_wset(int); uint64_t pd = 0, q = 0; uint8_t w = 0; if (player && tk_rd(player + 0x10, &pd, 8) && pd && tk_rd(pd + 0xf0, &q, 8) && q && tk_rd(q + 0x5a0, &w, 1)) dm_swapskill_srv_wset(w); }
+    // 弹药源（箭袋 / 投掷武器）：只在服务端玩家上读得到，客户端那份背包没有装备页数组——每拍在这里发布一份给前端
+    // Ammo source (quiver / throwing weapon): only readable off the server player (the client copy has no equipment-page
+    // array), so it is published here every tick for the front end
+    { void dm_ammo_publish(uint8_t *, uint64_t); module_t *m2 = main_mod(); if (m2 && player) dm_ammo_publish((uint8_t *)m2->base, player); }
     // 免费鉴定（未鉴定物品双击，触摸层 → dm_actions.c dm_item_identify_free 记下物品 id）：在服务端拍里调游戏自己的鉴定函数
     // main+0x78acf0(游戏, 服务端玩家, 服务端物品)——鉴定卷轴 / 书在服务端走的那个（misc.txt pSpell 表 0x20ad7e8 第 1 项），凯恩「鉴定全部」最后也调它：
     // 已鉴定返回 0；否则经 0x64c5f0 置 [物品数据+0x18] |= 0x10 并自己广播物品更新（0x9c / 0x9d）。不扣卷轴（扣数是外层 0x786410 的事）、不查位置、不要 NPC
