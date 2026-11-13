@@ -11,9 +11,7 @@
 | **Ammo on skill buttons** / 技能钮显示剩余弹药 | Shows the remaining ammo of the equipped quiver or throwing weapon; every quiver in the inventory counts / 装备箭袋或投掷武器时显示剩余弹量；背包里所有箭袋都算 |
 | **Adreno 8xx top-band fix** / Adreno 8xx 顶部黑块修复 | Compute shaders return at once outside the dispatched range / 计算着色器在派出范围外直接返回 |
 | **Touch stick feel** / 摇杆手感 | Full speed in 30 points instead of 60, square-root curve / 满速行程 60 → 30 点，平方根曲线 |
-| **Rejuv potions in the pouch** / 百宝囊收紫瓶 | Not auto-picked when the belt is full; a manual pickup goes into the pouch / 腰带满时不自动捡，手动捡进囊 |
-| **Tap the icon to refill the belt** / 点图标补腰带 | Takes one bottle from the pouch into the belt; stays in the inventory when the belt is full / 从囊里取一瓶补进腰带，腰带满则留背包 |
-| **Icon-only Deposit button** / 存放按钮图标化 | Original stash arrow icon, language-independent / 原版储藏箱箭头图标，跨语言 |
+| **Rejuv potions in the pouch** / 百宝囊（紫瓶） | Belt full → not auto-picked; a manual pickup goes into the pouch; tap the small / full rejuv icon to move one bottle into the belt (stays in the inventory if the belt is full); the Deposit button is an icon (language-independent) / 腰带满时不自动捡；手动捡进囊；点小紫 / 大紫图标取一瓶补进腰带（腰带满则留背包）；存放按钮改成跨语言图标 |
 
 **Not included / 不包含**: GPU drivers such as Turnip, Mesa or adrenotools — this build uses the system driver. / Turnip、Mesa、adrenotools 等驱动 —— 本版走系统驱动。
 
