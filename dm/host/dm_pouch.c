@@ -501,7 +501,6 @@ static void ui_pump(void) {
         snprintf(n, sizeof n, "%d", atomic_load(&g_cs)); w_text(find_w(boxw, "TouchRejuvSCount", 1), n);   // 小紫 | small rejuv
         snprintf(n, sizeof n, "%d", atomic_load(&g_cl)); w_text(find_w(boxw, "TouchRejuvLCount", 1), n);   // 大紫 | full rejuv
         shown = gen;
-        LOG("【诊断】百宝囊界面刷新：gen %d 件数 %d 小紫 %d 大紫 %d（控件 %d/%d/%d）", gen, atomic_load(&g_ucount), atomic_load(&g_cs), atomic_load(&g_cl), find_w(boxw, "TouchPouchCount", 1) != 0, find_w(boxw, "TouchRejuvSCount", 1) != 0, find_w(boxw, "TouchRejuvLCount", 1) != 0);
         if (g_tip) tip_show(root, 1); }
     if (atomic_exchange(&g_pouch_tap, 0)) tip_show(root, !g_tip);
     if (g_tip) tip_show(root, 1);   // 文字控件量尺寸要晚一两帧（fitToText）：开着时每帧对齐 | Text widgets measure their size a frame or two late (fitToText): align every frame while open
