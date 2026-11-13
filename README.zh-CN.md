@@ -1,5 +1,24 @@
 # D2R Mobile
 
+<details open>
+<summary><b>自编增强 — 本版内容 / Fork enhancements — this build</b></summary>
+
+> 本 fork 在官方版基础上加了以下功能，**不含任何游戏内容**，使用者需自备导入包。
+> This fork adds the features below on top of the upstream build. **No game content is bundled** — bring your own files.
+
+| 功能 / Feature | 说明 / Description |
+|---|---|
+| **技能钮显示剩余弹药** / Ammo on skill buttons | 装备箭袋或投掷武器时显示剩余弹量；背包里所有箭袋都算 / Remaining ammo of the equipped quiver or throwing weapon; every quiver in the inventory counts |
+| **Adreno 8xx 顶部黑块修复** / Adreno 8xx top-band fix | **社区实现（@yyan160 的 PR #268）** —— 计算着色器在派出范围外直接返回；我们在真机（一加 Ace 5 Pro / Adreno 830）验证 / **Community fix by @yyan160 (PR #268)** — compute shaders return at once outside the dispatched range; verified on OnePlus Ace 5 Pro / Adreno 830 |
+| **摇杆手感** / Touch stick feel | 满速行程 60 → 30 点，平方根曲线 / Full speed in 30 points instead of 60, square-root curve |
+| **百宝囊（紫瓶）** / Rejuv potions in the pouch | 腰带满时不自动捡；手动捡进囊；点小紫 / 大紫图标取一瓶补进腰带（腰带满则留背包）；存放按钮改成跨语言图标 / Belt full → not auto-picked; a manual pickup goes into the pouch; tap the icon to move one bottle into the belt (stays in the inventory if the belt is full); the Deposit button is an icon |
+
+**不包含 / Not included**: 驱动（Turnip / Mesa / adrenotools）—— 本版走系统驱动。/ GPU drivers — this build uses the system driver.
+
+Releases: https://github.com/Diablo-chia619/d2r-mobile/releases
+
+</details>
+
 **开源的《暗黑破坏神 II：狱火重生》术士君临兼容层，支持 iOS、macOS、安卓与鸿蒙。** 把你自己购买的 Nintendo Switch 版游戏（含「术士君临」资料片）完整带到 iPhone、iPad 和 Mac 上：原版内核原生执行，整套操作为触屏重做，稳定 60 帧，一秒进局。现在也有原生的 macOS 版（第一版）：Apple 芯片的 Mac 上双击启动，键盘、鼠标、手柄都能用。**v2.0 起有了安卓版**（社区移植）：同一份游戏程序在 ARM64 安卓手机上原生执行，图形在 Vulkan 上重新实现；骁龙 8+ 一代的手机上，营地、邪恶洞穴和奶牛关的战斗都是中位 60 帧，详见下面的「安卓版」；同一套引擎上还有鸿蒙版（社区移植，发布页下载未签名壳、自己重签即可，不用自己构建，见「鸿蒙版」）。Apple TV 4K（第三代 A15）有社区移植（开发者预览），只在作者的实机上到过职业选择画面，详见下面的设备表。
 
 这不是一个「勉强能跑」的技术演示，而是一个打磨到可以天天玩、从开荒一路玩到终局的移动版。
