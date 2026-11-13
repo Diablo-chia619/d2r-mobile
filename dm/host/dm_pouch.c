@@ -64,6 +64,7 @@ int dm_request_save(void); void dm_vault_request_deposit(uint32_t item_id); int 
 #define T_CHARM 13        // charm：小 / 中 / 大护身符（scha 83 / mcha 84 / lcha 85）与碎裂护身符（csch 108）的父类型（ItemTypes.txt 行号，同法算出 gem 20、rune 75 与宿主实探一致） | charm: the parent type of small / large / grand charms (scha 83 / mcha 84 / lcha 85) and the cracked charm (csch 108) (ItemTypes.txt row number; gem 20 and rune 75 computed the same way match what was probed on the host)
 
 static uint8_t *B;
+static uint64_t g_lastG;   // 最近一次服务端拍的 G（主线程的 store_begin 做重建/释放用） | G of the most recent server tick (used by store_begin on the main thread for rebuild/free)
 static uint64_t cli_player(void) { return ((uint64_t (*)(uint32_t))(B + 0x45f9d0))(*(uint32_t *)(B + 0x2d20e4c)); }
 static int is_rune_gem(uint64_t it) { int (*is)(uint64_t, int) = (int (*)(uint64_t, int))(B + 0x574bc0); return is(it, T_RUNE) || is(it, T_GEM); }
 // 材料页（原版高级仓库第三页，每种一个固定格）收的东西里，一键存放管这些：三把钥匙、三件器官、四种精华、赦免之证、世界之石碎片、五种超级先祖召唤材料（ua1–ua5）。
@@ -333,8 +334,7 @@ static void auto_pick(uint64_t pl, uint64_t fr) {
     {   // 背包里有在地上见过的符文 / 宝石 → 交服务端收（储藏箱旁直接进高级仓库，别处进囊） | The inventory contains a rune / gem that was seen on the ground -> hand it to the server to stow (next to the stash straight into the advanced stash, elsewhere into the pouch)
         uint64_t inv = *(uint64_t *)(pl + 0x90), it = inv && *(uint32_t *)inv == 0x01020304 ? *(uint64_t *)(inv + 0x10) : 0;
         for (int k = 0; it && k < 2048; k++) { uint64_t d = *(uint64_t *)(it + 0x10); if (!d) break; uint32_t id = *(uint32_t *)(it + 8);
-            { int dm_potpick_auto(uint32_t); { int dont = 0; for (int i = 0; i < 32 && i < g_ndont; i++) if (g_dontstow[i] == id) { dont = 1; break; } if (dont) { LOG("【诊断】紫瓶：背包里 id %u 在不回收列表 → 跳过", id); it = *(uint64_t *)(d + 0xb0); continue; } }
-            { uint32_t cc = item_code(it) & 0xffffffu; if (cc == 0x737672u || cc == 0x6c7672u) LOG("【诊断】紫瓶：背包里 id %u（%.3s）不在不回收列表 → 会被收（列表 %d 个）", id, (const char *)&cc, g_ndont); }
+            { int dm_potpick_auto(uint32_t); { int dont = 0; for (int i = 0; i < 32 && i < g_ndont; i++) if (g_dontstow[i] == id) { dont = 1; break; } if (dont) { it = *(uint64_t *)(d + 0xb0); continue; } }
             if (*(uint32_t *)(it + 0xc) == 0 && *(uint8_t *)(d + 0x55) == 0 && (gnd_has(id) || dm_potpick_auto(id)) && (is_rune_gem(it) || is_rejuv(it))) {   // 紫瓶只收「刚捡起来的」：地上见过 或 自动拾取 5 秒内发过；仓库满退回来的两条都不满足 → 不再收（防无限循环）
         // Rejuv is stowed only right after being picked up: seen on the ground, or sent by auto pickup within 5 s; a bottle bounced back from a full stash satisfies neither, so it is no longer stowed (no infinite loop)   // 紫瓶不看「地上见过」：dm_potpick 捡得比这一帧的地面扫描早，捡起那一刻地扫已看不到它了（2026-11-14 实测：捡进背包但囊里 0 件）
         // Rejuv does not need the "seen on the ground" flag: dm_potpick picks it up earlier in the same frame than the ground scan runs, so the id was never recorded (measured 2026-11-14: picked into the inventory, pouch stayed at 0)
@@ -381,7 +381,25 @@ static uint64_t page_item(uint64_t pl, uint32_t id, int page) {
     for (int k = 0; it && k < 2048; k++) { uint64_t d = *(uint64_t *)(it + 0x10); if (!d) break; if (*(uint32_t *)(it + 8) == id && *(uint32_t *)(it + 0xc) == 0 && *(uint8_t *)(d + 0x55) == page) return it; it = *(uint64_t *)(d + 0xb0); }
     return 0;
 }
+// 新的比编年史里的旧件好多少（>0 = 新的好；逐 stat 差值累加，固定词条相同所以只有随机属性贡献差值）
+// How much better the new item is than the one in the chronicle (>0 = new is better; per-stat difference summed; fixed affixes are identical so only the random rolls contribute)
+static int vault_better(uint8_t *b, uint64_t G, uint64_t new_it, int kind, int idx) {
+    int dm_vault_get_bits(int, int, uint8_t *, int);
+    uint8_t bits[1024]; int len = dm_vault_get_bits(kind, idx, bits, (int)sizeof bits);
+    if (len <= 0) return 1;   // 取不到旧件 → 当新的好
+    uint64_t old_it = dm_item_make(b, G, 0, bits, len, NULL);   // 重建旧件（不进任何物品栏）
+    if (!old_it) return 1;
+    int diff = 0;
+    for (int sid = 1; sid < 359; sid++) {
+        int a = ((int (*)(uint64_t, int, int))(b + 0x5b9290))(new_it, sid, 0);
+        int c = ((int (*)(uint64_t, int, int))(b + 0x5b9290))(old_it, sid, 0);
+        if (a != c) diff += (a - c);
+    }
+    ((void (*)(uint64_t, uint64_t))(b + 0x658be0))(G, old_it);   // 释放临时物品
+    LOG("编年史比较：新件差值 %d（>0 新的好）", diff);
+    return diff; }
 static void store_begin(uint64_t pl) {
+    uint64_t G = g_lastG; uint8_t *b = B;
     int ncube = 0;
     g_nst = 0; g_sv = g_sg = g_sp = g_sleft = 0; int vault = dm_vault_ready(), adv = adv_stash_unit(pl) != 0; g_snear = atomic_load(&g_near_pub);
     uint64_t inv = *(uint64_t *)(pl + 0x90), it = inv && *(uint32_t *)inv == 0x01020304 ? *(uint64_t *)(inv + 0x10) : 0;
@@ -398,7 +416,13 @@ static void store_begin(uint64_t pl) {
             else if ((q == 7 || q == 5) && (*(uint32_t *)(d + 0x18) & 0x10) && !is_charm(it) && !dm_item_quest(B, it)) {   // 已鉴定的暗金 / 套装件（同 dm_vault.c item_key）；护身符（常驻背包）与任务物品（编年史不收）不搬、也不算「留在背包」 | Identified unique / set items (same as item_key in dm_vault.c); charms (kept permanently in the inventory) and quest items (not accepted by the chronicle) are not moved and do not count as "left in the inventory" either
                 uint32_t key = (uint32_t)(q == 7) << 16 | (*(uint32_t *)(d + 0x34) & 0xffff); int dup = 0;   // 这一批里已有同一款（背包一件、魔盒又一件）：只存头一件，后一件不动——不然后一件会把前一件从编年史换回背包 | The same item is already in this batch (one in the inventory, another in the Horadric Cube): store only the first and leave the second alone, otherwise the second would swap the first back from the Chronicle into the inventory
                 for (int i = 0; i < g_nst; i++) if (g_st[i].to_vault && g_st[i].code == key) dup = 1;
-                if (vault && !dup && !dm_vault_has(q == 7, (int)*(uint32_t *)(d + 0x34))) { g_st[g_nst++] = (sitem){ id, key, 1, (uint8_t)page }; ncube += page == 3; } else if (page == 0) g_sleft++; } }
+                if (vault && !dup) {
+                    int vk = (q == 7), vi = (int)*(uint32_t *)(d + 0x34);
+                    if (!dm_vault_has(vk, vi)) { g_st[g_nst++] = (sitem){ id, key, 1, (uint8_t)page }; ncube += page == 3; }   // 没有同款：照旧存
+                    else { int cmp = vault_better(b, G, it, vk, vi);
+                        if (cmp > 0) { g_st[g_nst++] = (sitem){ id, key, 1, (uint8_t)page }; ncube += page == 3; LOG("编年史：新的比旧件好（%d）→ 替换，旧件回背包", cmp); }
+                        else { if (page == 0) g_sleft++; LOG("编年史：新的不如旧件（%d）→ 不替换", cmp); } }
+                } else if (page == 0) g_sleft++; } }
         it = *(uint64_t *)(d + 0xb0); }
     g_ist = 0; g_sfr = 0; LOG("存放：背包里 %d 件、魔盒里 %d 件要存（编年史里已有同件 / 没有编年史仓库的 %d 件不动；符文宝石%s）", g_nst - ncube, ncube, g_sleft, g_snear ? "在储藏箱旁，进高级仓库" : "进百宝囊");
 }
@@ -435,7 +459,7 @@ static int ours(uint64_t w) { const char *nm = w ? (const char *)*(uint64_t *)(w
     return nm && (!strncmp(nm, "TouchPouch", 10) || !strncmp(nm, "TouchRejuv", 10) || !strncmp(nm, "TouchStore", 10)); }
 static void w_move(uint64_t w, int x, int y) { if (!ours(w)) return; int32_t *r = (int32_t *)(w + 0x70); if (r[0] == x && r[1] == y) return; r[0] = x; r[1] = y; ((void (*)(uint64_t))*(uint64_t *)(*(uint64_t *)w + 0x10))(w); }
 static void w_text(uint64_t w, const char *s) {   // 文字控件改字（虚表 main+0x20ba4c8，串 +0x88 / 长 +0x90，改完 0xadc434 重排；同 dm_vault_ui.c vu_text） | Change a text widget's text (vtable main+0x20ba4c8, string +0x88 / length +0x90, re-layout with 0xadc434 after changing; same as vu_text in dm_vault_ui.c)
-    if (!ours(w) || *(uint64_t *)w - (uint64_t)(uintptr_t)B != 0x20ba4c8) { LOG("【诊断】w_text 拒绝：控件 %#llx ours %d 虚表 %#llx（要 0x20ba4c8）", (unsigned long long)w, ours(w), w ? (unsigned long long)(*(uint64_t *)w - (uint64_t)(uintptr_t)B) : 0ULL); return; } size_t n = strlen(s);
+    if (!ours(w) || *(uint64_t *)w - (uint64_t)(uintptr_t)B != 0x20ba4c8) return; size_t n = strlen(s);
     if (*(uint64_t *)(w + 0x90) == n && !memcmp(*(const char **)(w + 0x88), s, n)) return;
     ((void (*)(uint64_t, const char *, uint64_t))(B + 0x136e5c))(w + 0x88, s, n); ((void (*)(uint64_t))(B + 0xadc434))(w); }
 static const char *str_of(uint32_t code) { char k[5] = { 0 }; memcpy(k, &code, 4); for (int i = 3; i >= 0 && k[i] == ' '; i--) k[i] = 0;   // 物品名：原版字符串（键 = 物品码，同 dm_kills.c str_of） | Item name: original game string (key = item code, same as str_of in dm_kills.c)
@@ -504,7 +528,8 @@ void dm_pouch_step(uint8_t *b) {   // 游戏主线程每帧（dm_world.c） | ev
     store_step(pl, fr);
     if (dm_custom_get("gem_pick") && g_ist < 0) auto_pick(pl, fr);
 }
-void dm_pouch_srv_tick(uint8_t *b, uint64_t G, uint64_t player) {   // 服务端拍（diag.c hud_tick；不在局内 player 为 0）：收 / 放 / 系统提示（系统提示只许服务端线程发） | Server tick (hud_tick in diag.c; player is 0 when not in a run): stow / release / system notices (system notices may only be sent from the server thread)
+void dm_pouch_srv_tick(uint8_t *b, uint64_t G, uint64_t player) {
+    g_lastG = G;
     static uint64_t lp; if (!player) { lp = 0; pthread_mutex_lock(&g_umu); g_uload = 0; pthread_mutex_unlock(&g_umu); return; }
     B = b; uint32_t tq = *(uint32_t *)(G + 0x170);
     if (player != lp) { lp = player; uint64_t pd = *(uint64_t *)(player + 0x10); pthread_mutex_lock(&g_umu); strlcpy(g_uchar, pd ? (const char *)pd : "", sizeof g_uchar); pouch_load(); g_uload = 1; pthread_mutex_unlock(&g_umu); }   // 进局（换了玩家单位）读一次 | Read once on entering a run (the player unit changed)
@@ -517,7 +542,7 @@ void dm_pouch_srv_tick(uint8_t *b, uint64_t G, uint64_t player) {   // 服务端
         if (r) { uint32_t want = r == 1 ? 0x737672u : 0x6c7672u; uint32_t nid = 0;
             pthread_mutex_lock(&g_umu); nid = pouch_take_code(b, G, player, want); pthread_mutex_unlock(&g_umu);
             if (nid) {
-                g_dontstow[g_ndont++ % 32] = nid; LOG("【诊断】紫瓶：取出新 id %u，记入不回收列表（共 %d 个，最新在 %d）", nid, g_ndont, (g_ndont - 1) % 32);   // 点图标取出来的，别再自动收回去
+                g_dontstow[g_ndont++ % 32] = nid;
                 uint64_t it = bag_item(player, nid), inv = *(uint64_t *)(player + 0x90); uint32_t slot = 0;
                 if (it && inv && ((int (*)(uint64_t, uint64_t, uint32_t *, int))(b + 0x561de0))(inv, it, &slot, 1)) {   // 原版腰带找位：能进就直接塞腰带
                     struct { uint32_t slot; uint8_t fixed; } tgt = { slot, 1 };
