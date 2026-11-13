@@ -12,6 +12,7 @@
 | **Adreno 8xx top-band fix** / Adreno 8xx 顶部黑块修复 | **Community fix by @yyan160 (PR #268)** — compute shaders return at once outside the dispatched range; verified on our device (OnePlus Ace 5 Pro / Adreno 830) / **社区实现（@yyan160 的 PR #268）** —— 计算着色器在派出范围外直接返回；我们在真机（一加 Ace 5 Pro / Adreno 830）验证 |
 | **Touch stick feel** / 摇杆手感 | Full speed in 30 points instead of 60, square-root curve / 满速行程 60 → 30 点，平方根曲线 |
 | **Rejuv potions in the pouch** / 百宝囊（紫瓶） | Belt full → not auto-picked; a manual pickup goes into the pouch; tap the small / full rejuv icon to move one bottle into the belt (stays in the inventory if the belt is full); the Deposit button is an icon (language-independent) / 腰带满时不自动捡；手动捡进囊；点小紫 / 大紫图标取一瓶补进腰带（腰带满则留背包）；存放按钮改成跨语言图标 |
+| **Chronicle upgrade on store (testing)** / 编年史自动比较暗金（测试中） | Storing a unique / set item that already exists in the Chronicle compares the two stat by stat: if the new one rolled better it replaces the old one and the old item drops back into the inventory; if not, the new one stays in the inventory. **Currently under test — please try it and report back** / 存入与编年史同款的暗金或套装时逐条属性比较：新件更好则替换（旧件自动回背包），否则保留旧件、新件留在背包。**目前还在测试中，希望大家帮忙测，有问题欢迎反馈** |
 
 **Not included / 不包含**: GPU drivers such as Turnip, Mesa or adrenotools — this build uses the system driver. / Turnip、Mesa、adrenotools 等驱动 —— 本版走系统驱动。
 
