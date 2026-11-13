@@ -74,6 +74,10 @@ static int is_mat(uint64_t it) { static const char k[][4] = { "pk1", "pk2", "pk3
     uint32_t c = ((uint32_t (*)(uint64_t))(B + 0x570260))(it) & 0xffffff; for (unsigned i = 0; i < sizeof k / sizeof *k; i++) if (!memcmp(&c, k[i], 3)) return 1; return 0; }
 static int is_charm(uint64_t it) { return ((int (*)(uint64_t, int))(B + 0x574bc0))(it, T_CHARM); }
 static uint32_t item_code(uint64_t it) { return ((uint32_t (*)(uint64_t))(B + 0x570260))(it); }
+
+// 紫瓶（回复药剂）：小紫 rvs / 大紫 rvl。进囊、点图标喝都只认这两个码
+// Rejuvenation potions: small rvs / full rvl. Stowing and the button drink only recognise these two codes
+static int is_rejuv(uint64_t it) { uint32_t c = item_code(it) & 0xffffffu; return c == 0x737672u || c == 0x6c7672u; }
 #define AUTO_RUNE_MAX 18   // 自动捡的符文只到 18 号（19 号 Lem 起让玩家手动捡，有仪式感）；宝石全捡 | Auto-picked runes only go up to No. 18 (from No. 19 Lem on, the player picks them up manually, for a sense of ceremony); all gems are picked up
 static int auto_ok(uint64_t it) {   // 自动拾取挑哪些：宝石全要；符文按物品码 rNN 的号 | Which ones auto pickup takes: all gems; runes by the number in the item code rNN
     if (!is_rune_gem(it)) return 0;
@@ -99,8 +103,12 @@ static upend g_up[256]; static int g_nup, g_udirty;   // g_udirty：盘上状态
 static uint32_t g_ready[64]; static int g_nready;   // 已证明放进背包、等发 0x63 的新物品 id（钩子写、服务端拍取） | New item ids proven to be in the inventory and waiting for 0x63 to be sent (written by the hook, taken by the server tick)
 static pthread_mutex_t g_umu = PTHREAD_MUTEX_INITIALIZER;   // 服务端拍与写盘线程（提交前钩子）都碰；界面读清单也拿它 | Touched by both the server tick and the disk-write thread (pre-commit hook); the UI also takes it when reading the list
 static _Atomic int g_ucount, g_ugen;   // 囊里件数 / 内容一变就加一（界面读） | Item count in the pouch / incremented by one whenever the contents change (read by the UI)
+static _Atomic int g_cs, g_cl;
+static uint32_t g_storefail[16]; static int g_nfail;
+static uint32_t g_sentcode[16], g_sentfr[16]; static int g_nsent;
+static uint32_t g_dontstow[32]; static int g_ndont;   // 点图标从囊里取出来的紫瓶新 id：不再被自动收回去 | New ids of rejuv taken out by tapping the icon: never auto-stowed back   // 最近发过「移到仓库」的物品码 + 帧（5 秒冷却：同码在冷却内不再收进囊，防「囊→背包→仓库→失败→再收」的无限循环） | Codes recently sent as "move to stash" with the frame (5 s cooldown: the same code is not stowed again while cooling down, breaking the pouch->inventory->stash->fail->stow again loop)   // 存不进的物品码 rvs/rvl…（不用 id：丢地上再捡会分到新 id）；离开储藏箱清空 | Item codes that failed to move into the stash (not ids: dropped and picked up again gets a new id); cleared when walking away from the stash   // 囊里小紫 / 大紫的件数（界面两个图标上的数字） | Small / full rejuvenation counts in the pouch (the two icon digits)
 static void pouch_path(char *p, size_t n, const char *wd) { snprintf(p, n, "%s/%s/%s.swpouch", wd, g_uchar, g_uchar); }
-static void pouch_pub(void) { atomic_store(&g_ucount, g_nu); atomic_fetch_add(&g_ugen, 1); }
+static void pouch_pub(void) { int cs = 0, cl = 0; for (int i = 0; i < g_nu; i++) { uint32_t c = g_u[i].code & 0xffffffu; if (c == 0x737672u) cs++; else if (c == 0x6c7672u) cl++; } atomic_store(&g_ucount, g_nu); atomic_store(&g_cs, cs); atomic_store(&g_cl, cl); atomic_fetch_add(&g_ugen, 1); }
 static void pouch_load(void) {   // 进局读一次（工作目录里的那份 = 上次提交的）。格式（小端）：'SWPU' u8 版本 1 u8 0 u16 条数；每条 u32 物品码 u16 位流长 + 位流 | Read once on entering a run (the copy in the working directory = the last committed one). Format (little-endian): 'SWPU' u8 version 1 u8 0 u16 entry count; each entry u32 item code u16 bitstream length + bitstream
     g_nu = g_nud = g_nup = g_nready = 0; const char *wd = dm_save_workdir(); if (!wd || !g_uchar[0]) { pouch_pub(); return; }
     char p[1200]; pouch_path(p, sizeof p, wd); FILE *f = fopen(p, "rb");
@@ -151,8 +159,14 @@ __attribute__((constructor)) static void pouch_hook_install(void) { extern void 
 // 收进囊：背包里的这件符文 / 宝石（服务端物品）→ 写位流 → 摘下 → 通知 → 释放；记一条「收」（持 g_umu 调）
 // Stow into the pouch: this rune / gem in the inventory (server item) -> write bitstream -> remove -> notify -> free; record one "stow" entry (called holding g_umu)
 static int pouch_put(uint8_t *b, uint64_t G, uint64_t player, uint32_t id) {
-    uint64_t it = bag_item(player, id), pp = it ? *(uint64_t *)(it + 0x38) : 0;   // 沿玩家自己的物品栏链表找（服务端玩家同一布局）：只收背包（页 0、方式 0）里的符文 / 宝石 | Search along the player's own item container linked list (the server player has the same layout): only stow runes / gems that are in the inventory (page 0, placement 0)
-    if (!it || !pp || !(is_rune_gem(it) || is_mat(it))) return -1;
+    uint64_t it = bag_item(player, id), pp = it ? *(uint64_t *)(it + 0x38) : 0;
+    { for (int i = 0; i < 32 && i < g_ndont; i++) if (g_dontstow[i] == id) { LOG("百宝囊：id %u 是点图标取出来的 → 不收", id); return -5; } }   // 点图标取出的不收（auto_pick 已跳过，这里再堵一道：absorb 队列里可能有旧 id 碰巧命中新物品）
+    // Taken out by tapping the icon -> never stow (auto_pick already skips it; this is a second gate: a stale id in the absorb queue may happen to match the new item)   // 沿玩家自己的物品栏链表找（服务端玩家同一布局）：只收背包（页 0、方式 0）里的符文 / 宝石 | Search along the player's own item container linked list (the server player has the same layout): only stow runes / gems that are in the inventory (page 0, placement 0)
+
+    if (!it || !pp || !(is_rune_gem(it) || is_mat(it) || is_rejuv(it))) return -1;
+    { uint32_t c0 = item_code(it) & 0xffffffu; for (int i = 0; i < 16 && i < g_nfail; i++) if (g_storefail[i] == c0) { LOG("百宝囊：%.3s 本轮存不进仓库，不再收", (const char *)&c0); return -4; }
+      { uint32_t tq0 = *(uint32_t *)(G + 0x170); for (int i = 0; i < 16 && i < g_nsent; i++) if (g_sentcode[i] == c0 && tq0 - g_sentfr[i] < 250) { LOG("百宝囊：%.3s 刚发过移到仓库（%u 拍前），5 秒冷却内不再收", (const char *)&c0, tq0 - g_sentfr[i]); return -4; } } }   // 防循环：囊→背包→发 0x63→失败→又被收
+
     if (g_nu >= UMAX || g_nup >= 256) { LOG("【红】百宝囊：囊里 %d 件 / 待证明 %d 条已满，这件留在背包", g_nu, g_nup); return -2; }
     uint8_t buf[1024]; int len = dm_item_write(b, it, buf); if (!len || len > UBYTES) { LOG("【红】百宝囊：物品 id %u 位流 %d 字节，不收", id, len); return -3; }
     uitem u = { item_code(it), (uint16_t)len, { 0 } }; memcpy(u.bits, buf, (size_t)len); int x = *(int32_t *)(pp + 0x10), y = *(int32_t *)(pp + 0x14);
@@ -183,6 +197,30 @@ static int pouch_take(uint8_t *b, uint64_t G, uint64_t player) {
     g_nu--; pouch_pub(); LOG("百宝囊：%.3s 放到背包格 %u,%u（新 id %u）→ 囊里还剩 %d 件，等落盘证明后进高级仓库", (const char *)&u.code, fx, fy, p->nid, g_nu);
     return 1;
 }
+// 按物品码取一件（紫瓶按钮）：从囊里挑同码的一件建出来放进背包；成功返回新物品 id，0 = 囊里没有 / 背包放不下（持 g_umu 调）
+// Take one entry of a given item code (the rejuv buttons): build it into a free inventory spot; returns the new item id, 0 = none / no room (called holding g_umu)
+static uint32_t pouch_take_code(uint8_t *b, uint64_t G, uint64_t player, uint32_t want) {
+    int k = -1; for (int i = g_nu - 1; i >= 0; i--) if ((g_u[i].code & 0xffffffu) == want) { k = i; break; }
+    if (k < 0 || g_nup >= 256) return 0;
+    uitem u = g_u[k]; uint64_t pp = *(uint64_t *)(player + 0x38), room = pp ? *(uint64_t *)(pp + 0x20) : 0; if (!room) return 0;
+    uint64_t nu = dm_item_make(b, G, room, u.bits, u.len, NULL); if (!nu) { LOG("【红】百宝囊：%.3s 位流建不出物品，留在囊里", (const char *)&u.code); return 0; }
+    uint64_t inv = *(uint64_t *)(player + 0x90); uint32_t cls = *(uint32_t *)(player + 4), fx = 0, fy = 0;
+    if (!inv || cls > 7 || !((int (*)(uint64_t, uint64_t, int, uint32_t *, uint32_t *, int))(b + 0x55f620))(inv, nu, *(int32_t *)(b + 0x1dae684 + cls * 8 + 4), &fx, &fy, 0)) {
+        ((void (*)(uint64_t, uint64_t))(b + 0x658be0))(G, nu); return 0; }
+    uint64_t nd = *(uint64_t *)(nu + 0x10), ip = *(uint64_t *)(nu + 0x38); if (!nd || !ip) { ((void (*)(uint64_t, uint64_t))(b + 0x658be0))(G, nu); return 0; }
+    *(uint8_t *)(nd + 0x55) = 0; *(int32_t *)(ip + 0x10) = (int32_t)fx; *(int32_t *)(ip + 0x14) = (int32_t)fy;
+    uint64_t one = nu, ox = 0; ((int (*)(uint64_t, uint64_t, uint64_t *, uint64_t *))(b + 0x6f1940))(G, player, &one, &ox);
+    if (!*(uint64_t *)(nd + 0xa0)) { ((void (*)(uint64_t, uint64_t))(b + 0x658be0))(G, nu); LOG("【红】百宝囊：%.3s 放进背包没成（格 %u,%u），留在囊里", (const char *)&u.code, fx, fy); return 0; }
+    ((void (*)(uint64_t, uint64_t, uint64_t, int, int, int, int, int, uint64_t))(b + 0x642f70))(G, player, nu, 1, 2, 0, 0, 0, (uint64_t)(fx & 0xffff) | (uint64_t)fy << 16);
+    uint8_t buf[1024]; int len = dm_item_write(b, nu, buf);
+    upend *p = &g_up[g_nup++]; memset(p, 0, sizeof *p); p->put = 0; p->it = u; p->nid = *(uint32_t *)(nu + 8);
+    if (len > 0 && len <= UBYTES) { p->plen = (uint16_t)len; memcpy(p->pb, buf, (size_t)len); } else { p->plen = u.len; memcpy(p->pb, u.bits, u.len); }
+    for (int i = k; i < g_nu - 1; i++) g_u[i] = g_u[i + 1];
+    g_nu--; pouch_pub(); LOG("百宝囊：%.3s 按码取出放到背包格 %u,%u（新 id %u）→ 囊里还剩 %d 件", (const char *)&u.code, fx, fy, p->nid, g_nu);
+    return p->nid;
+}
+// 囊里某个物品码有几件（界面数字用） | How many entries of an item code the pouch holds (for the UI count)
+static int pouch_count_code(uint32_t want) { int n = 0; for (int i = 0; i < g_nu; i++) if ((g_u[i].code & 0xffffffu) == want) n++; return n; }
 static uint32_t adv_stash_unit(uint64_t pl) {   // 玩家自己的高级仓库单位 id：物品栏 +0x68 附属单位表（+0 单位 id、+0xa 类，+0x10 下一个），类 1 = 高级仓库（同 dm_vault.c item_dump；客户端 / 服务端玩家同一布局） | The player's own advanced stash unit id: the attached unit table at item container +0x68 (+0 unit id, +0xa class, +0x10 next), class 1 = advanced stash (same as item_dump in dm_vault.c; client / server players share the same layout)
     uint64_t inv = *(uint64_t *)(pl + 0x90); int k = 0;
     for (uint64_t en = inv ? *(uint64_t *)(inv + 0x68) : 0; en && k < 32; en = *(uint64_t *)(en + 0x10), k++) if (*(uint8_t *)(en + 0xa) == 1) return *(uint32_t *)en;
@@ -219,7 +257,7 @@ static int stash_sweep(uint8_t *b, uint64_t G, uint64_t player, uint32_t unit, u
     int full = 0;
     for (int i = 0; i < nsw; ) { int still = 0; for (int k = 0; k < nc; k++) still |= cand[k] == dm[i].id;   // 发过的：不在仓库页了 = 进了高级仓库 | already sent: no longer in the stash page = it went into the advanced stash tabs
         if (!still) { LOG("珍宝匣：物品 id %u 已从仓库页转进高级仓库", dm[i].id); *saved = 1; dm[i] = dm[--nsw]; continue; }
-        if (tq - dm[i].t >= 50) { if (nold < 768) old[nold++] = dm[i].id; LOG("珍宝匣：物品 id %u 发了移到仓库 2 秒还在仓库页（那一格叠满 / 不收）→ 留在原处，不再发", dm[i].id); full = 1; dm[i] = dm[--nsw]; continue; }
+        if (tq - dm[i].t >= 50) { if (nold < 768) old[nold++] = dm[i].id; g_storefail[g_nfail++ % 32] = dm[i].id; LOG("珍宝匣：物品 id %u 发了移到仓库 2 秒还在仓库页（那一格叠满 / 不收）→ 留在原处，不再发", dm[i].id); full = 1; dm[i] = dm[--nsw]; continue; }
         i++; }
     for (int k = 0; k < nc && nsw < 16; k++) { int skip = 0; for (int i = 0; i < nold && !skip; i++) skip = old[i] == cand[k]; for (int i = 0; i < nsw && !skip; i++) skip = dm[i].id == cand[k];
         if (skip) continue; move_to_stash(b, G, player, cand[k], unit); dm[nsw++] = (dm_t){ cand[k], tq }; LOG("珍宝匣：仓库页里新落下的物品 id %u → 原版移到仓库（高级仓库单位 %u）", cand[k], unit); break; }   // 一拍发一件 | send one item per tick
@@ -295,10 +333,14 @@ static void auto_pick(uint64_t pl, uint64_t fr) {
     {   // 背包里有在地上见过的符文 / 宝石 → 交服务端收（储藏箱旁直接进高级仓库，别处进囊） | The inventory contains a rune / gem that was seen on the ground -> hand it to the server to stow (next to the stash straight into the advanced stash, elsewhere into the pouch)
         uint64_t inv = *(uint64_t *)(pl + 0x90), it = inv && *(uint32_t *)inv == 0x01020304 ? *(uint64_t *)(inv + 0x10) : 0;
         for (int k = 0; it && k < 2048; k++) { uint64_t d = *(uint64_t *)(it + 0x10); if (!d) break; uint32_t id = *(uint32_t *)(it + 8);
-            if (*(uint32_t *)(it + 0xc) == 0 && *(uint8_t *)(d + 0x55) == 0 && gnd_has(id) && is_rune_gem(it)) {
+            { int dm_potpick_auto(uint32_t); { int dont = 0; for (int i = 0; i < 32 && i < g_ndont; i++) if (g_dontstow[i] == id) { dont = 1; break; } if (dont) { LOG("【诊断】紫瓶：背包里 id %u 在不回收列表 → 跳过", id); it = *(uint64_t *)(d + 0xb0); continue; } }
+            { uint32_t cc = item_code(it) & 0xffffffu; if (cc == 0x737672u || cc == 0x6c7672u) LOG("【诊断】紫瓶：背包里 id %u（%.3s）不在不回收列表 → 会被收（列表 %d 个）", id, (const char *)&cc, g_ndont); }
+            if (*(uint32_t *)(it + 0xc) == 0 && *(uint8_t *)(d + 0x55) == 0 && (gnd_has(id) || dm_potpick_auto(id)) && (is_rune_gem(it) || is_rejuv(it))) {   // 紫瓶只收「刚捡起来的」：地上见过 或 自动拾取 5 秒内发过；仓库满退回来的两条都不满足 → 不再收（防无限循环）
+        // Rejuv is stowed only right after being picked up: seen on the ground, or sent by auto pickup within 5 s; a bottle bounced back from a full stash satisfies neither, so it is no longer stowed (no infinite loop)   // 紫瓶不看「地上见过」：dm_potpick 捡得比这一帧的地面扫描早，捡起那一刻地扫已看不到它了（2026-11-14 实测：捡进背包但囊里 0 件）
+        // Rejuv does not need the "seen on the ground" flag: dm_potpick picks it up earlier in the same frame than the ground scan runs, so the id was never recorded (measured 2026-11-14: picked into the inventory, pouch stayed at 0)
                 int slot = -1; for (int i = 0; i < 16; i++) { if (g_pk[i].st == 2 && g_pk[i].id == id) { slot = -2; break; } if (slot == -1 && (!g_pk[i].st || g_pk[i].id == id)) slot = i; }
                 if (slot >= 0) { int mine = g_pk[slot].st == 1 && g_pk[slot].id == id; g_pk[slot] = (pick){ id, item_code(it), fr, 2 }; gnd_del(id); absorb_push(id);
-                    LOG("百宝囊：%.3s（id %u）%s进了背包 → 交服务端收（%s）", (const char *)&g_pk[slot].code, id, mine ? "" : "玩家自己捡", atomic_load(&g_near_pub) ? "储藏箱旁：进高级仓库" : "进百宝囊"); return; } }
+                    LOG("百宝囊：%.3s（id %u）%s进了背包 → 交服务端收（%s）", (const char *)&g_pk[slot].code, id, mine ? "" : "玩家自己捡", atomic_load(&g_near_pub) ? "储藏箱旁：进高级仓库" : "进百宝囊"); return; } } }
             it = *(uint64_t *)(d + 0xb0); } }
     uint64_t pp = *(uint64_t *)(pl + 0x38); if (!pp) return; int px = *(uint16_t *)(pp + 2), py = *(uint16_t *)(pp + 6);
     // 测试开关 DM_TEST_PICK=<帧>:<物品码>（造现场用）：到帧替「玩家自己」捡地上这种物品一件——客户端发原版捡起包 0x16，同玩家点地面；不进 g_pk，验「玩家自己捡的也收」
@@ -310,7 +352,7 @@ static void auto_pick(uint64_t pl, uint64_t fr) {
           ((void (*)(const uint8_t *, int))(B + 0x2ceab0))(pk, 17); LOG("测试 DM_TEST_PICK：帧 %llu 替玩家捡地上 %s（id %u）", (unsigned long long)fr, code, id); at = 0; break; } }
     uint32_t want = 0, wcode = 0; int wx = 0, wy = 0;
     for (int k = 0; k < 128; k++) for (uint64_t it = *(uint64_t *)(B + 0x2d603a0 + 4 * 0x400 + k * 8); it; it = *(uint64_t *)(it + 0x158)) {
-        if (*(uint32_t *)(it + 0xc) != 3 || !is_rune_gem(it)) continue;   // 地上的符文 / 宝石：都记下 | Runes / gems on the ground: record them all
+        if (*(uint32_t *)(it + 0xc) != 3 || !(is_rune_gem(it) || is_rejuv(it))) continue;   // 地上的符文 / 宝石 / 紫瓶：都记下（紫瓶的捡取由 dm_potpick.c 负责） | Runes / gems / rejuvenation potions on the ground: record them all (the potion pickup itself is dm_potpick.c's job)
         uint32_t id = *(uint32_t *)(it + 8); gnd_add(id);
         uint64_t ip = *(uint64_t *)(it + 0x38); if (want || !ip) continue; int x = *(int32_t *)(ip + 0x10), y = *(int32_t *)(ip + 0x14);
         if (abs(x - px) > PICK_R || abs(y - py) > PICK_R || !auto_ok(it)) continue;
@@ -330,7 +372,7 @@ static void auto_pick(uint64_t pl, uint64_t fr) {
 // ---- Deposit: done one item at a time
 typedef struct { uint32_t id, code; uint8_t to_vault, page; } sitem;   // page：这件原来在哪一页（0 背包 / 3 魔盒） | page: which page this item was originally on (0 inventory / 3 Horadric Cube)
 static sitem g_st[128]; static int g_nst, g_ist = -1, g_sv, g_sg, g_sp, g_sleft, g_snear; static uint64_t g_sfr;
-static _Atomic int g_store_req, g_pouch_tap;
+static _Atomic int g_store_req, g_pouch_tap, g_rejuv_req;   // g_rejuv_req：1 = 点了小紫框，2 = 点了大紫框 | 1 = small rejuv box tapped, 2 = full rejuv box tapped
 static char g_notice[160]; static _Atomic int g_notice_req;
 // 这件还在不在原来那一页（客户端物品栏；方式 0 = 在容器里）
 // Whether this item is still on its original page (client inventory; mode 0 = in a container)
@@ -389,10 +431,11 @@ static uint64_t find_w(uint64_t w, const char *name, int dep) {
     for (uint64_t i = 0; i < n; i++) { uint64_t r = find_w(*(uint64_t *)(ch + 8 * i), name, dep + 1); if (r) return r; }
     return 0;
 }
-static int ours(uint64_t w) { const char *nm = w ? (const char *)*(uint64_t *)(w + 8) : NULL; return nm && (!strncmp(nm, "TouchPouch", 10) || !strcmp(nm, "TouchStore")); }
+static int ours(uint64_t w) { const char *nm = w ? (const char *)*(uint64_t *)(w + 8) : NULL;   // 我们的控件：TouchPouch* / TouchRejuv* / TouchStore*（挡住 0x20ba4c8 虚表的别的文字控件）
+    return nm && (!strncmp(nm, "TouchPouch", 10) || !strncmp(nm, "TouchRejuv", 10) || !strncmp(nm, "TouchStore", 10)); }
 static void w_move(uint64_t w, int x, int y) { if (!ours(w)) return; int32_t *r = (int32_t *)(w + 0x70); if (r[0] == x && r[1] == y) return; r[0] = x; r[1] = y; ((void (*)(uint64_t))*(uint64_t *)(*(uint64_t *)w + 0x10))(w); }
 static void w_text(uint64_t w, const char *s) {   // 文字控件改字（虚表 main+0x20ba4c8，串 +0x88 / 长 +0x90，改完 0xadc434 重排；同 dm_vault_ui.c vu_text） | Change a text widget's text (vtable main+0x20ba4c8, string +0x88 / length +0x90, re-layout with 0xadc434 after changing; same as vu_text in dm_vault_ui.c)
-    if (!ours(w) || *(uint64_t *)w - (uint64_t)(uintptr_t)B != 0x20ba4c8) return; size_t n = strlen(s);
+    if (!ours(w) || *(uint64_t *)w - (uint64_t)(uintptr_t)B != 0x20ba4c8) { LOG("【诊断】w_text 拒绝：控件 %#llx ours %d 虚表 %#llx（要 0x20ba4c8）", (unsigned long long)w, ours(w), w ? (unsigned long long)(*(uint64_t *)w - (uint64_t)(uintptr_t)B) : 0ULL); return; } size_t n = strlen(s);
     if (*(uint64_t *)(w + 0x90) == n && !memcmp(*(const char **)(w + 0x88), s, n)) return;
     ((void (*)(uint64_t, const char *, uint64_t))(B + 0x136e5c))(w + 0x88, s, n); ((void (*)(uint64_t))(B + 0xadc434))(w); }
 static const char *str_of(uint32_t code) { char k[5] = { 0 }; memcpy(k, &code, 4); for (int i = 3; i >= 0 && k[i] == ' '; i--) k[i] = 0;   // 物品名：原版字符串（键 = 物品码，同 dm_kills.c str_of） | Item name: original game string (key = item code, same as str_of in dm_kills.c)
@@ -425,9 +468,17 @@ static void ui_pump(void) {
     if (dm_ui_top_chk_on()) { uint64_t old = root ? find_w(root, "TouchPouchBox", 2) : 0; if (old != boxw) { static int k; if (k++ < 20) LOG("【红】百宝囊对拍：TouchPouchBox 新找法 %#llx、旧找法 %#llx", (unsigned long long)boxw, (unsigned long long)old); } }
     if (!boxw) return;
     int gp = dm_custom_get("gem_pick"), sb = dm_custom_get("store_btn");
-    w_move(find_w(boxw, "TouchPouch", 1), gp ? 222 : 99999, 1294); w_move(find_w(boxw, "TouchPouchIcon", 1), gp ? 246 : 99999, 1310); w_move(find_w(boxw, "TouchPouchCount", 1), gp ? 350 : 99999, 1294);
-    w_move(find_w(boxw, "TouchStore", 1), sb ? 916 : 99999, 1323);
-    static int shown = -1; int gen = atomic_load(&g_ugen); if (gen != shown) { char n[16]; snprintf(n, sizeof n, "%d", atomic_load(&g_ucount)); w_text(find_w(boxw, "TouchPouchCount", 1), n); shown = gen; if (g_tip) tip_show(root, 1); }
+    w_move(find_w(boxw, "TouchPouch", 1), gp ? 936 : 99999, 1296); w_move(find_w(boxw, "TouchPouchCount", 1), gp ? 916 : 99999, 1396);
+    w_move(find_w(boxw, "TouchRejuvS", 1), gp ? 240 : 99999, 1296); w_move(find_w(boxw, "TouchRejuvSCount", 1), gp ? 220 : 99999, 1396);
+    w_move(find_w(boxw, "TouchRejuvL", 1), gp ? 384 : 99999, 1296); w_move(find_w(boxw, "TouchRejuvLCount", 1), gp ? 364 : 99999, 1396);
+    w_move(find_w(boxw, "TouchStore", 1), sb ? 1060 : 99999, 1294);
+    static int shown = -1; int gen = atomic_load(&g_ugen); if (gen != shown) { char n[16];
+        snprintf(n, sizeof n, "%d", atomic_load(&g_ucount)); w_text(find_w(boxw, "TouchPouchCount", 1), n);
+        snprintf(n, sizeof n, "%d", atomic_load(&g_cs)); w_text(find_w(boxw, "TouchRejuvSCount", 1), n);   // 小紫 | small rejuv
+        snprintf(n, sizeof n, "%d", atomic_load(&g_cl)); w_text(find_w(boxw, "TouchRejuvLCount", 1), n);   // 大紫 | full rejuv
+        shown = gen;
+        LOG("【诊断】百宝囊界面刷新：gen %d 件数 %d 小紫 %d 大紫 %d（控件 %d/%d/%d）", gen, atomic_load(&g_ucount), atomic_load(&g_cs), atomic_load(&g_cl), find_w(boxw, "TouchPouchCount", 1) != 0, find_w(boxw, "TouchRejuvSCount", 1) != 0, find_w(boxw, "TouchRejuvLCount", 1) != 0);
+        if (g_tip) tip_show(root, 1); }
     if (atomic_exchange(&g_pouch_tap, 0)) tip_show(root, !g_tip);
     if (g_tip) tip_show(root, 1);   // 文字控件量尺寸要晚一两帧（fitToText）：开着时每帧对齐 | Text widgets measure their size a frame or two late (fitToText): align every frame while open
 }
@@ -436,6 +487,8 @@ void dm_pouch_on_uimsg(const char *cat, const char *act, const char *arg) {   //
     if (!cat || !act || !arg || strcmp(cat, "PanelManager") || strcmp(act, "ClosePanel")) return;
     if (!strcmp(arg, "TouchPouch")) atomic_store(&g_pouch_tap, 1);
     else if (!strcmp(arg, "TouchStore") || !strcmp(arg, "TouchPadStore")) atomic_store(&g_store_req, 1);   // TouchPadStore = 手柄版暂停菜单的「存放」行（touch_layout.py pad_pause） | TouchPadStore = the "Deposit" row of the controller pause menu (touch_layout.py pad_pause)
+    else if (!strcmp(arg, "TouchRejuvS")) atomic_store(&g_rejuv_req, 1);   // 小紫框：从囊里取一瓶补到腰带 | small rejuv box: take one from the pouch and top up the belt
+    else if (!strcmp(arg, "TouchRejuvL")) atomic_store(&g_rejuv_req, 2);   // 大紫框 | full rejuv box
 }
 void dm_pouch_step(uint8_t *b) {   // 游戏主线程每帧（dm_world.c） | every frame on the game main thread (dm_world.c)
     if (!b) return; B = b; uint64_t fr = dm_guest_frame();
@@ -455,14 +508,30 @@ void dm_pouch_srv_tick(uint8_t *b, uint64_t G, uint64_t player) {   // 服务端
     static uint64_t lp; if (!player) { lp = 0; pthread_mutex_lock(&g_umu); g_uload = 0; pthread_mutex_unlock(&g_umu); return; }
     B = b; uint32_t tq = *(uint32_t *)(G + 0x170);
     if (player != lp) { lp = player; uint64_t pd = *(uint64_t *)(player + 0x10); pthread_mutex_lock(&g_umu); strlcpy(g_uchar, pd ? (const char *)pd : "", sizeof g_uchar); pouch_load(); g_uload = 1; pthread_mutex_unlock(&g_umu); }   // 进局（换了玩家单位）读一次 | Read once on entering a run (the player unit changed)
-    int near = ((int (*)(uint64_t, uint64_t, int, int))(b + 0x650d10))(G, player, 0x10b, 0x32) & 1; atomic_store(&g_near_pub, near);   // 原版「移到仓库」用的同一个判断：50 以内有储藏箱物件 267 | The same check the original game's "move to stash" uses: a stash object 267 within 50
+    int near = ((int (*)(uint64_t, uint64_t, int, int))(b + 0x650d10))(G, player, 0x10b, 0x32) & 1; atomic_store(&g_near_pub, near);
+    if (!near && g_nfail) { g_nfail = 0; LOG("百宝囊：离开储藏箱 → 清除「存不进」名单，下次开箱重新试"); }   // 原版「移到仓库」用的同一个判断：50 以内有储藏箱物件 267 | The same check the original game's "move to stash" uses: a stash object 267 within 50
     uint32_t unit = adv_stash_unit(player); int go63 = near && unit;
+    {   // 紫瓶框：从百宝囊取一瓶放进背包，再交给原版的喝药路径（g_use → 腰带/背包分支自己组 0x26）。背包放不下就不取、提示一次
+        // Rejuv box: take one bottle from the pouch into the inventory, then hand it to the original drink path (g_use -> the belt / inventory branch builds the 0x26 packet). No room: take nothing and log once
+        int r = atomic_exchange(&g_rejuv_req, 0);
+        if (r) { uint32_t want = r == 1 ? 0x737672u : 0x6c7672u; uint32_t nid = 0;
+            pthread_mutex_lock(&g_umu); nid = pouch_take_code(b, G, player, want); pthread_mutex_unlock(&g_umu);
+            if (nid) {
+                g_dontstow[g_ndont++ % 32] = nid; LOG("【诊断】紫瓶：取出新 id %u，记入不回收列表（共 %d 个，最新在 %d）", nid, g_ndont, (g_ndont - 1) % 32);   // 点图标取出来的，别再自动收回去
+                uint64_t it = bag_item(player, nid), inv = *(uint64_t *)(player + 0x90); uint32_t slot = 0;
+                if (it && inv && ((int (*)(uint64_t, uint64_t, uint32_t *, int))(b + 0x561de0))(inv, it, &slot, 1)) {   // 原版腰带找位：能进就直接塞腰带
+                    struct { uint32_t slot; uint8_t fixed; } tgt = { slot, 1 };
+                    ((void (*)(uint64_t, uint64_t, uint8_t, int, void *))(b + 0x3c1cd0))(it, player, *(uint8_t *)(*(uint64_t *)(it + 0x10) + 0x55), 1, &tgt);
+                    LOG("紫瓶：从百宝囊取出一瓶 %.3s（新 id %u）→ 放进腰带槽 %u", r == 1 ? "rvs" : "rvl", nid, slot); }
+                else LOG("紫瓶：取出一瓶 %.3s（新 id %u）但腰带放不进 → 留在背包", r == 1 ? "rvs" : "rvl", nid); }
+            else LOG("紫瓶：囊里没有 %.3s / 背包放不下，补不了腰带", r == 1 ? "rvs" : "rvl"); } }
     typedef struct { uint32_t id, t; } watch; static watch wl[64]; static int nw;   // 发了 0x63、等它离开背包的 | Items for which 0x63 was sent, waiting for them to leave the inventory
     int full_notice = 0;
     int saved = 0;
     pthread_mutex_lock(&g_umu);
     for (unsigned r = atomic_load(&g_absr); r != atomic_load(&g_absw); r++) { uint32_t id = atomic_load(&g_absq[r % 64]); atomic_store(&g_absr, r + 1);   // 收：储藏箱旁直接进高级仓库，别处进囊 | Stow: next to the stash it goes straight into the advanced stash, elsewhere into the pouch
-        if (go63) { move_to_stash(b, G, player, id, unit); if (nw < 64) wl[nw++] = (watch){ id, tq }; LOG("百宝囊：物品 id %u 在储藏箱旁 → 原版移到仓库（高级仓库单位 %u）", id, unit); }
+        if (go63) { move_to_stash(b, G, player, id, unit); if (nw < 64) wl[nw++] = (watch){ id, tq }; { uint64_t it3 = bag_item(player, id), d3 = it3 ? *(uint64_t *)(it3 + 0x10) : 0; if (it3 && d3) { uint32_t c3 = item_code(it3) & 0xffffffu; g_sentcode[g_nsent % 16] = c3; g_sentfr[g_nsent % 16] = tq; g_nsent++; } }
+            LOG("百宝囊：物品 id %u 在储藏箱旁 → 原版移到仓库（高级仓库单位 %u）", id, unit); }
         else if (!unit) LOG("百宝囊：物品 id %u —— 这个角色没有高级仓库，不收", id);
         else if (pouch_put(b, G, player, id) > 0) saved = 1; }
     // 测试开关 DM_TEST_HOLDY=<拍>:<物品码>:<54|55>（手柄光标不好用脚本摆位，用它造「按住确认键移到当前页」）：到拍对背包里第一件这种物品代发那条包（字段照实录的填：个人页 0x54、共享页 0x55），走收包分发、会经过上面的改道
@@ -482,13 +551,15 @@ void dm_pouch_srv_tick(uint8_t *b, uint64_t G, uint64_t player) {   // 服务端
         else LOG("珍宝匣：物品 id %u 改道后%s，留在背包", id, go63 ? "不在背包里" : "人已离开储藏箱"); }
     g_c2s_nq = 0; if (g_c2s_full) { g_c2s_full = 0; full_notice = 1; }
     for (int i = 0; i < g_nready; i++) {   // 已证明放进背包的 → 0x63；证明到时人已离开储藏箱就收回囊里 | Those proven to be in the inventory -> 0x63; if the player has left the stash by the time the proof arrives, take it back into the pouch
-        if (go63) { move_to_stash(b, G, player, g_ready[i], unit); if (nw < 64) wl[nw++] = (watch){ g_ready[i], tq }; }
+        if (go63) { move_to_stash(b, G, player, g_ready[i], unit); if (nw < 64) wl[nw++] = (watch){ g_ready[i], tq }; { uint64_t it3 = bag_item(player, g_ready[i]), d3 = it3 ? *(uint64_t *)(it3 + 0x10) : 0; if (it3 && d3) { uint32_t c3 = item_code(it3) & 0xffffffu; g_sentcode[g_nsent % 16] = c3; g_sentfr[g_nsent % 16] = tq; g_nsent++; } } }
         else if (pouch_put(b, G, player, g_ready[i]) > 0) { saved = 1; LOG("百宝囊：物品 id %u 落盘证明时已离开储藏箱，收回囊里", g_ready[i]); } }
     g_nready = 0;
     for (int i = 0; i < nw; ) {   // 0x63 之后：离开了背包 = 进了高级仓库（叠进去的那件已释放）；2 秒还在背包（页满 / 叠满）→ 收回囊里 | After 0x63: left the inventory = entered the advanced stash (the item that was stacked in has been freed); still in the inventory after 2 seconds (page full / stack full) -> take it back into the pouch
         if (!bag_item(player, wl[i].id)) { wl[i] = wl[--nw]; saved = 1; continue; }   // 进了仓库就马上请存盘：叠堆落盘前被杀，物品会回到放进背包那一刻（不丢，但留在背包） | Request a save as soon as it has entered the stash: if killed before the stack is persisted, the item goes back to the moment it was put in the inventory (not lost, but left in the inventory)
         if (tq - wl[i].t >= 50) {   // 那一格叠满（99）/ 放不下：留在背包、提示一次，不收回囊里——原先收回囊里，箱子开着时会「放回背包 → 再发 → 再失败」每秒循环一次 | that stack is full (99) / no room: leave it in the inventory and notify once, do not take it back into the Pouch. It used to be taken back, which with the stash open looped "back to inventory → send again → fail again" once a second
-            LOG("百宝囊：物品 id %u 移到仓库 2 秒还在背包（那一格叠满 / 放不下）→ 留在背包，提示一次", wl[i].id); full_notice = 1; wl[i] = wl[--nw]; continue; }
+            LOG("百宝囊：物品 id %u 移到仓库 2 秒还在背包（那一格叠满 / 放不下）→ 留在背包，这种药不再收进囊", wl[i].id); full_notice = 1;
+            { uint64_t it2 = bag_item(player, wl[i].id), d2 = it2 ? *(uint64_t *)(it2 + 0x10) : 0; if (it2 && d2) { uint32_t c2 = item_code(it2) & 0xffffffu; g_storefail[g_nfail++ % 16] = c2; LOG("百宝囊：%.3s 存不进仓库 → 这种物品在本轮不再收进囊", (const char *)&c2); } }   // 记物品码（丢捡后 id 会变）
+            wl[i] = wl[--nw]; continue; }
         i++; }
     {   // 放：储藏箱开着、人在旁边、囊里有、收进囊的都已证明（同一件不会同时挂着收和放）；每 25 拍一批，背包放满就等下一批 | Release: stash open, player next to it, pouch not empty, everything stowed into the pouch already proven (the same item is never pending both stow and release); one batch every 25 ticks; when the inventory is full, wait for the next batch
         static uint32_t last; int puts = 0; for (int j = 0; j < g_nup; j++) puts += g_up[j].put;

@@ -1435,6 +1435,15 @@ static int potpick_gate(const uint64_t *regs) {
     uint32_t mode = 0, slot = 0; if (!u || !tk_rd(u + 0xC, &mode, 4) || mode != 3 || !tk_rd(p + 0x90, &inv, 8) || !inv) return 0;
     uint32_t code = ((uint32_t (*)(uint64_t))(m->base + 0x570260))(u);
     if (((int (*)(uint64_t, uint64_t, uint32_t *, int))(m->base + 0x561de0))(inv, u, &slot, 1)) { static int ok; if (ok++ < 40) LOG("药水自动拾取：物品 %u（%.4s）到服务端时腰带放得进（槽 %u），放行", id, (const char *)&code, slot); return 0; }
+    {   // 紫瓶例外：腰带放不下、但背包放得下 → 放行（进了背包由百宝囊（dm_pouch.c）收走，最终进材料页）；背包也满才照旧丢包
+        // Rejuvenation exception: the belt is full but the inventory has room -> let it through (dm_pouch.c picks it up from the inventory and it ends in the materials page); only drop it when the inventory is full too
+        uint32_t c3 = code & 0xffffffu;
+        if (c3 == 0x737672u || c3 == 0x6c7672u) {
+            uint32_t cls = 0, fx = 0, fy = 0;
+            if (tk_rd(p + 4, &cls, 4) && cls <= 7 &&
+                ((int (*)(uint64_t, uint64_t, int, uint32_t *, uint32_t *, int))(m->base + 0x55f620))(inv, u, *(int32_t *)(m->base + 0x1dae684 + cls * 8 + 4), &fx, &fy, 0)) {
+                static int ok2; if (ok2++ < 40) LOG("药水自动拾取：物品 %u（%.4s）腰带满、背包放得下（格 %u,%u）→ 放行，交给百宝囊收", id, (const char *)&code, fx, fy);
+                return 0; } } }
     static int dr; if (dr++ < 40) LOG("药水自动拾取：物品 %u（%.4s）到服务端时腰带已放不下 → 不捡，留在地上（丢包第 %d 次）", id, (const char *)&code, dr);
     return 1;
 }
