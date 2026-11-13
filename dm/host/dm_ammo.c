@@ -107,6 +107,31 @@ int dm_ammo_source(uint8_t *b, uint64_t pl, dm_ammo_src *o) {
     return 0;
 }
 
+// 箭袋总数 = 副手那袋 + 背包（页 0、模式 0）里**同样码**的所有箭袋。
+// 游戏会自己换箭袋（副手打空后从背包再上一袋），所以显示总数才有意义。
+// 箭和弩矢分开算（用户 2026-11-13 定：一般一个角色只用一种弓，分流派，不会混着用）。
+// Total quiver count = the quiver in the off hand + every quiver of the SAME code in the backpack (page 0, mode 0).
+// The game refills the off hand by itself when a quiver runs out, so the total is what matters.
+// Arrows and bolts are counted separately (the user's call 2026-11-13: one character uses one kind of bow, a single build).
+static int quiver_total(uint8_t *b, uint64_t inv, uint64_t worn, uint32_t want) {
+    int total = 0;
+    if (worn) { int q = ammo_stat(b, worn, 70); if (q > 0) total += q; }
+    if (!ok_unit(inv)) return total;
+    uint64_t it = *(uint64_t *)(uintptr_t)(inv + 0x10);   // 物品链头（同 dm_beltauto.c / diag.c cube_items） | item chain head (same as dm_beltauto.c / diag.c cube_items)
+    for (int k = 0; it && k < 512; k++) {
+        if (!ok_unit(it)) break;
+        uint64_t d = *(uint64_t *)(uintptr_t)(it + 0x10);   // 数据块 | data block
+        if (!ok_unit(d)) break;
+        // 只算背包里的（模式 0 = 存放、页 0 = 背包）；副手那袋模式 1，本来就不在这条分支里，再用 it != worn 兜一道
+        // Backpack only (mode 0 = stored, page 0 = backpack); the worn one is mode 1 and already excluded, it != worn is a second guard
+        if (it != worn && *(uint32_t *)(uintptr_t)(it + 0xc) == 0 && *(uint8_t *)(uintptr_t)(d + 0x55) == 0) {
+            if ((ammo_code(b, it) & 0xffffu) == want) { int q = ammo_stat(b, it, 70); if (q > 0) total += q; }
+        }
+        it = *(uint64_t *)(uintptr_t)(d + 0xb0);
+    }
+    return total;
+}
+
 static int dm_ammo_source_raw(uint8_t *b, uint64_t pl, dm_ammo_src *o) {
     memset(o, 0, sizeof *o);
     if (!b || !ok_unit(pl)) return 0;
@@ -131,8 +156,8 @@ static int dm_ammo_source_raw(uint8_t *b, uint64_t pl, dm_ammo_src *o) {
         if (sh) {   // 副手是箭袋（码 aq / cq 开头，不会误认） | the off hand is a quiver (code starts with aq / cq, cannot misfire)
             uint32_t lc = ammo_code(b, sh) & 0xffffu;
             if (lc == 0x7161u || lc == 0x7163u) {
-                int q = ammo_stat(b, sh, 70);
-                o->item = sh; o->weapon = w; o->qty = q > 0 ? q : 0; o->kind = 1; o->set = i;
+                int q = quiver_total(b, inv, sh, lc);   // 副手 + 背包里同码的箭袋 | the worn quiver plus the same code in the backpack
+                o->item = sh; o->weapon = w; o->qty = q; o->kind = 1; o->set = i;
                 ammo_diag(b, inv, o); return 1;
             }
         }
