@@ -1,5 +1,26 @@
 # D2R Mobile
 
+<details open>
+<summary><b>Fork enhancements — this build / 自编增强 — 本版内容</b></summary>
+
+> This fork adds the features below on top of the upstream build. **No game content is bundled** — bring your own files.
+> 本 fork 在官方版基础上加了以下功能，**不含任何游戏内容**，使用者需自备导入包。
+
+| Feature / 功能 | Description / 说明 |
+|---|---|
+| **Ammo on skill buttons** / 技能钮显示剩余弹药 | Shows the remaining ammo of the equipped quiver or throwing weapon; every quiver in the inventory counts / 装备箭袋或投掷武器时显示剩余弹量；背包里所有箭袋都算 |
+| **Adreno 8xx top-band fix** / Adreno 8xx 顶部黑块修复 | Compute shaders return at once outside the dispatched range / 计算着色器在派出范围外直接返回 |
+| **Touch stick feel** / 摇杆手感 | Full speed in 30 points instead of 60, square-root curve / 满速行程 60 → 30 点，平方根曲线 |
+| **Rejuv potions in the pouch** / 百宝囊收紫瓶 | Not auto-picked when the belt is full; a manual pickup goes into the pouch / 腰带满时不自动捡，手动捡进囊 |
+| **Tap the icon to refill the belt** / 点图标补腰带 | Takes one bottle from the pouch into the belt; stays in the inventory when the belt is full / 从囊里取一瓶补进腰带，腰带满则留背包 |
+| **Icon-only Deposit button** / 存放按钮图标化 | Original stash arrow icon, language-independent / 原版储藏箱箭头图标，跨语言 |
+
+**Not included / 不包含**: GPU drivers such as Turnip, Mesa or adrenotools — this build uses the system driver. / Turnip、Mesa、adrenotools 等驱动 —— 本版走系统驱动。
+
+Releases: https://github.com/Diablo-chia619/d2r-mobile/releases
+
+</details>
+
 **An open-source compatibility layer for Diablo II: Resurrected with the Reign of the Warlock expansion, for iOS, macOS, Android and HarmonyOS.** It brings the Nintendo Switch release you bought, expansion included, to iPhone, iPad and Mac in full: the original game code runs natively, every control is rebuilt for touch, the frame rate holds at 60 fps, and you are in a game one second after the main menu. There is now a native macOS version as well (first version): on an Apple silicon Mac it starts on double-click and works with keyboard, mouse and gamepad. **Since v2.0 there is an Android version** (community port): the same game program executes natively on ARM64 Android phones, with the graphics reimplemented on Vulkan; on a Snapdragon 8+ Gen 1 phone the camp and the Den of Evil and Cow Level fights all run at a median 60 fps (see "Android" below); a HarmonyOS version runs on the same engine (community port: an unsigned shell from the Releases page that you re-sign yourself, nothing to build; see "HarmonyOS"). Apple TV 4K (3rd generation, A15) has a community port (developer preview) that has reached the character-selection screen only on its author's device; see the device table below.
 
 This is not a tech demo that "sort of runs". It is a mobile version polished for daily play, from your first character all the way through the endgame.
