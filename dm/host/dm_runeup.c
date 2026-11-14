@@ -361,3 +361,23 @@ void dm_runeup_list_text(char *out, int cap) {
     }
     if (!n) snprintf(out, cap, "%s", dm_ui("dmRwNoMat"));
 }
+
+// 符文合成弹框用：每号「还能合几个」，只回 >0 的；返回条数（最多 max 条）
+// For the rune-craft popup: how many of each rune number can still be made; only >0 entries; returns the count (at most max)
+int dm_runeup_list(int *no_out, int *cnt_out, int max) {
+    uint8_t *b = rb(); if (!b || !no_out || !cnt_out || max < 1) return 0;
+    uint64_t pl = player(b); if (!pl) return 0;
+    build_cls_cache(b, up_tables(b, pl));
+    inv_t v; scan_inv(b, pl, &v);
+    int gem[40]; for (int k = 0; k < g_cls_gem_n && k < 40; k++) gem[k] = v.gem[k];
+    int n = 0;
+    for (int no = 2; no <= 33 && n < max; no++) {
+        int need = RCP[no].n, from = RCP[no].from, cnt = v.rune[from] / need;
+        if (RCP[no].gem[0]) { int gi = gem_idx(RCP[no].gem); if (gi >= 0 && gem[gi] < cnt) cnt = gem[gi]; }
+        if (cnt <= 0) continue;
+        v.rune[from] -= cnt * need; v.rune[no] += cnt;
+        if (RCP[no].gem[0]) { int gi = gem_idx(RCP[no].gem); if (gi >= 0) gem[gi] -= cnt; }
+        no_out[n] = no; cnt_out[n] = cnt; n++;
+    }
+    return n;
+}

@@ -65,12 +65,29 @@ def _has(s, nm): return re.search(r'"name"\s*:\s*"%s"' % re.escape(nm), s) is no
 # Rune-craft button (host dm_runeup.c): the free spot at the stash footer to the right of the gold box. The user picked this spot; future features stack below.
 # Coordinates: widened panel coordinates (gold_withdraw is x=471..788, +196 after widening -> 667..984; the button follows on its right)
 def rune_craft(s):
+    """符文合成按钮 + 弹框列表（宿主 dm_pouch.c / dm_runeup.c）。
+    按钮：储藏箱页脚、金币框右边（用户指定，以后新功能往下排）。
+    弹框：屏幕中间，12 行，每行「N# × 数量」+「合成」按钮；缺的号不列。
+    Rune-craft button + popup list (host dm_pouch.c / dm_runeup.c).
+    Button: stash footer, right of the gold box (user's spot; future features stack below).
+    Popup: centred, 12 rows, each "N# x count" + a Craft button; missing numbers are not listed."""
+    rows = []
+    for i in range(12):
+        y = 470 + i * 56
+        rows.append('                    { "type": "TextBoxWidget", "name": "TouchRcText%d", "fields": { "rect": { "x": 604, "y": %d, "width": 320, "height": 50 }, "text": "", "style": "$StyleGoldAmount" } },\n' % (i, y))
+        rows.append('                    { "type": "ButtonWidget", "name": "TouchRcRow%d", "fields": { "rect": { "x": 936, "y": %d, "width": 220, "height": 50 }, "filename": "FrontEnd/HD/Final/FrontEnd_ButtonSmall", "textString": "@dmRcMake", "textColor": "$LightButtonTextColor", "text/style": "$StyleFEButtonText", "scale": 0.6, "onClickMessage": "PanelManager:ClosePanel:TouchRcRow%d" } },\n' % (i, y, i))
     box = ('\n                { "type": "Widget", "name": "TouchRuneCraftBox", "children": [\n'
            '                    { "type": "NineTileImageWidget", "name": "TouchRuneCraftBg", "fields": { "rect": { "x": 1012, "y": 1290, "width": 300, "height": 100 }, "filename": "PANEL/TooltipBorder/TooltipBorder", "backgroundColor": [0.0, 0.0, 0.0, 0.55], "tileScale": 0.5 } },\n'
-           '                    { "type": "ButtonWidget", "name": "TouchRuneCraft", "fields": { "rect": { "x": 1012, "y": 1290, "width": 300, "height": 100 }, "filename": "FrontEnd/HD/Final/FrontEnd_ButtonSmall", "textString": "@dmRuneCraft", "textColor": "$LightButtonTextColor", "text/style": "$StyleFEButtonText", "onClickMessage": "PanelManager:ClosePanel:TouchRuneCraft" } }\n'
+           '                    { "type": "ButtonWidget", "name": "TouchRuneCraft", "fields": { "rect": { "x": 1012, "y": 1290, "width": 300, "height": 100 }, "filename": "FrontEnd/HD/Final/FrontEnd_ButtonSmall", "textString": "@dmRuneCraft", "textColor": "$LightButtonTextColor", "text/style": "$StyleFEButtonText", "onClickMessage": "PanelManager:ClosePanel:TouchRuneCraft" } },\n'
+           '                    { "type": "Widget", "name": "TouchRcPanel", "children": [\n'
+           '                        { "type": "NineTileImageWidget", "name": "TouchRcBg", "fields": { "rect": { "x": 572, "y": 380, "width": 620, "height": 830 }, "filename": "PANEL/TooltipBorder/TooltipBorder", "backgroundColor": [0.0, 0.0, 0.0, 0.92], "tileScale": 1.0 } },\n'
+           '                        { "type": "TextBoxWidget", "name": "TouchRcTitle", "fields": { "rect": { "x": 604, "y": 396, "width": 400, "height": 60 }, "text": "@dmRuneCraft", "style": "$StyleGoldAmount" } },\n'
+           '                        { "type": "ButtonWidget", "name": "TouchRcClose", "fields": { "rect": { "x": 1040, "y": 396, "width": 130, "height": 56 }, "filename": "FrontEnd/HD/Final/FrontEnd_ButtonSmall", "textString": "@dmRcClose", "textColor": "$LightButtonTextColor", "text/style": "$StyleFEButtonText", "scale": 0.5, "onClickMessage": "PanelManager:ClosePanel:TouchRcClose" } },\n'
+           + ''.join(rows) +
+           '                    ] }\n'
            '                ] },\n')
     i = s.index('"children"', s.index('"name": "advancedstash_horadriccube"')); i = s.index('[', i) + 1
-    print("wide_stash：符文合成按钮插入到 advancedstash_horadriccube.children（插入点 %d，长度 %d）" % (i, len(s)))
+    print("wide_stash：符文合成按钮+弹框插入（插入点 %d，长度 %d）" % (i, len(s)))
     return s[:i] + box + s[i:]
 
 def bank_layout(text):

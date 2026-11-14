@@ -463,7 +463,7 @@ static uint64_t find_w(uint64_t w, const char *name, int dep) {
     return 0;
 }
 static int ours(uint64_t w) { const char *nm = w ? (const char *)*(uint64_t *)(w + 8) : NULL;   // 我们的控件：TouchPouch* / TouchRejuv* / TouchStore*（挡住 0x20ba4c8 虚表的别的文字控件）
-    return nm && (!strncmp(nm, "TouchPouch", 10) || !strncmp(nm, "TouchRejuv", 10) || !strncmp(nm, "TouchStore", 10)); }
+    return nm && (!strncmp(nm, "TouchPouch", 10) || !strncmp(nm, "TouchRejuv", 10) || !strncmp(nm, "TouchStore", 10) || !strncmp(nm, "TouchRc", 7) || !strncmp(nm, "TouchRuneCraft", 14)); }
 static void w_move(uint64_t w, int x, int y) { if (!ours(w)) return; int32_t *r = (int32_t *)(w + 0x70); if (r[0] == x && r[1] == y) return; r[0] = x; r[1] = y; ((void (*)(uint64_t))*(uint64_t *)(*(uint64_t *)w + 0x10))(w); }
 static void w_text(uint64_t w, const char *s) {   // 文字控件改字（虚表 main+0x20ba4c8，串 +0x88 / 长 +0x90，改完 0xadc434 重排；同 dm_vault_ui.c vu_text） | Change a text widget's text (vtable main+0x20ba4c8, string +0x88 / length +0x90, re-layout with 0xadc434 after changing; same as vu_text in dm_vault_ui.c)
     if (!ours(w) || *(uint64_t *)w - (uint64_t)(uintptr_t)B != 0x20ba4c8) return; size_t n = strlen(s);
@@ -472,6 +472,28 @@ static void w_text(uint64_t w, const char *s) {   // 文字控件改字（虚表
 static const char *str_of(uint32_t code) { char k[5] = { 0 }; memcpy(k, &code, 4); for (int i = 3; i >= 0 && k[i] == ' '; i--) k[i] = 0;   // 物品名：原版字符串（键 = 物品码，同 dm_kills.c str_of） | Item name: original game string (key = item code, same as str_of in dm_kills.c)
     struct { const char *k; uint64_t n; } s = { k, strlen(k) }; const char *r = dm_untag(((const char *(*)(void *))(B + 0x7f5630))(&s)); return r && *r ? r : "?"; }   /* 跳过西语串首的性别标记 | Skip the gender marker at the start of Spanish strings */
 static int g_tip;
+// ---------- 符文合成弹框（储藏箱页脚按钮点开；12 行「N# ×数量」+「合成」） ----------
+// Rune-craft popup (opened by the stash-footer button; 12 rows of "N# x count" + a Craft button)
+static int g_rc, g_rc_no[12], g_rc_n;
+int dm_runeup_start(int rune_no, char *why, int cap);   // dm_runeup.c
+static void rc_show(uint64_t root, int on) {
+    uint64_t bg = find_w(root, "TouchRcBg", 1), title = find_w(root, "TouchRcTitle", 1), close = find_w(root, "TouchRcClose", 1);
+    for (int i = 0; i < 12; i++) { char nm[24]; snprintf(nm, sizeof nm, "TouchRcText%d", i); w_move(find_w(root, nm, 1), 99999, 0);
+        snprintf(nm, sizeof nm, "TouchRcRow%d", i); w_move(find_w(root, nm, 1), 99999, 0); }
+    if (!on) { w_move(bg, 99999, 0); w_move(title, 99999, 0); w_move(close, 99999, 0); g_rc = 0; return; }
+    int dm_runeup_list(int *, int *, int); int nos[12], cnts[12];
+    int n = dm_runeup_list(nos, cnts, 12); g_rc_n = n; for (int i = 0; i < n; i++) g_rc_no[i] = nos[i];
+    for (int i = 0; i < n; i++) { char nm[24], line[64];
+        snprintf(nm, sizeof nm, "TouchRcText%d", i); snprintf(line, sizeof line, "%d# ×%d", nos[i], cnts[i]); w_text(find_w(root, nm, 1), line);
+        snprintf(nm, sizeof nm, "TouchRcRow%d", i);
+        w_move(find_w(root, nm, 1), 936, 470 + i * 56); }
+    for (int i = 0; i < n; i++) { char nm[24]; snprintf(nm, sizeof nm, "TouchRcText%d", i); w_move(find_w(root, nm, 1), 604, 470 + i * 56); }
+    w_move(bg, 572, 380); w_move(title, 604, 396); w_move(close, 1040, 396);
+    g_rc = 1; LOG("符文合成：弹框开了，%d 行", n);
+}
+static int g_rc_init;
+static void rc_pump(uint64_t root) {   // 没开时每帧把弹框挪走（布局里给的是绝对坐标，会默认显示） | keep the popup off screen while closed
+    if (g_rc) return; if (!root) return; rc_show(root, 0); g_rc_init = 1; (void)g_rc_init; }
 static void tip_show(uint64_t root, int on) {
     uint64_t tb = find_w(root, "TouchPouchTip", 1), bg = find_w(root, "TouchPouchTipBg", 1), box = find_w(root, "TouchPouch", 1); if (!tb || !bg || !box) return;
     if (!on) { w_move(tb, 99999, 0); w_move(bg, 99999, 0); g_tip = 0; return; }
@@ -509,6 +531,7 @@ static void ui_pump(void) {
         snprintf(n, sizeof n, "%d", atomic_load(&g_cl)); w_text(find_w(boxw, "TouchRejuvLCount", 1), n);   // 大紫 | full rejuv
         shown = gen;
         if (g_tip) tip_show(root, 1); }
+    rc_pump(root);
     if (atomic_exchange(&g_pouch_tap, 0)) tip_show(root, !g_tip);
     if (g_tip) tip_show(root, 1);   // 文字控件量尺寸要晚一两帧（fitToText）：开着时每帧对齐 | Text widgets measure their size a frame or two late (fitToText): align every frame while open
 }
@@ -516,11 +539,18 @@ static void ui_pump(void) {
 void dm_pouch_on_uimsg(const char *cat, const char *act, const char *arg) {   // 界面消息回调（diag.c）：我们的两个按钮发 ClosePanel:TouchPouch / TouchStore | UI message callback (diag.c): our two buttons send ClosePanel:TouchPouch / TouchStore
     if (!cat || !act || !arg || strcmp(cat, "PanelManager") || strcmp(act, "ClosePanel")) return;
     if (!strcmp(arg, "TouchPouch")) atomic_store(&g_pouch_tap, 1);
-    if (!strcmp(arg, "TouchRuneCraft")) {   // 符文合成按钮：列出每号还能合几个 | rune-craft button: list how many of each rune can still be made
-        void dm_runeup_list_text(char *, int); static char t[420];
-        dm_runeup_list_text(t, sizeof t);
-        snprintf(g_notice, sizeof g_notice, "符文合成：%s", t); atomic_store(&g_notice_req, 1);
-        LOG("符文合成：点了按钮 → %s", t); }
+    if (!strcmp(arg, "TouchRuneCraft")) {   // 符文合成按钮：开/关弹框 | rune-craft button: toggle the popup
+        uint64_t root = *(uint64_t *)(B + 0x2f05458);
+        LOG("符文合成：点了按钮（弹框现在 %s）", g_rc ? "开着 → 关" : "关着 → 开");
+        rc_show(root, !g_rc); return; }
+    if (!strcmp(arg, "TouchRcClose")) { uint64_t root = *(uint64_t *)(B + 0x2f05458); rc_show(root, 0); LOG("符文合成：关了弹框（点了关闭）"); return; }
+    if (!strncmp(arg, "TouchRcRow", 10)) {   // 点某一行 → 合一个那一号 | a row was tapped -> craft one of that rune
+        int i = atoi(arg + 10); uint64_t root = *(uint64_t *)(B + 0x2f05458);
+        int no = (i >= 0 && i < g_rc_n && i < 12) ? g_rc_no[i] : 0;
+        if (no > 0) { char why[200] = ""; int r = dm_runeup_start(no, why, sizeof why);
+            LOG("%s符文合成：点第 %d 行 → %d 号 %s", r ? "【红】" : "", i + 1, no, r ? why : "开始");
+            snprintf(g_notice, sizeof g_notice, r ? "符文合成没开始：%s" : "开始合成 %d 号", r ? why : no); atomic_store(&g_notice_req, 1); }
+        rc_show(root, 0); return; }
     else if (!strcmp(arg, "TouchStore") || !strcmp(arg, "TouchPadStore")) atomic_store(&g_store_req, 1);   // TouchPadStore = 手柄版暂停菜单的「存放」行（touch_layout.py pad_pause） | TouchPadStore = the "Deposit" row of the controller pause menu (touch_layout.py pad_pause)
     else if (!strcmp(arg, "TouchRejuvS")) atomic_store(&g_rejuv_req, 1);   // 小紫框：从囊里取一瓶补到腰带 | small rejuv box: take one from the pouch and top up the belt
     else if (!strcmp(arg, "TouchRejuvL")) atomic_store(&g_rejuv_req, 2);   // 大紫框 | full rejuv box
