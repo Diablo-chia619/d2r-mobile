@@ -127,7 +127,8 @@ static void scan_inv(uint8_t *b, uint64_t pl, inv_t *v) {   // 只算现在拿�
 // ---------- 计划 ----------
 typedef struct { int craft[34]; int need_gem[40]; int short_rune, short_cnt, short_gem; } plan_t;
 static int make_plan(uint8_t *b, uint64_t t, int to, plan_t *p) {
-    (void)t; memset(p, 0, sizeof *p); p->short_rune = -1; p->short_gem = -1;
+    memset(p, 0, sizeof *p); p->short_rune = -1; p->short_gem = -1;
+    build_cls_cache(b, t);   // 必须先建符文类号缓存，否则 scan_inv 数出来全是 0 → 任何合成都报「缺料」 | must build the rune class cache first, otherwise scan_inv counts zero and every craft claims it lacks materials
     if (to < 1 || to > 33) return 1;
     inv_t have; scan_inv(b, player(b), &have);
     int need[34]; memset(need, 0, sizeof need); need[to] = 1;

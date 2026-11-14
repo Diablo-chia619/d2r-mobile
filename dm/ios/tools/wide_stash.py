@@ -66,22 +66,21 @@ def _has(s, nm): return re.search(r'"name"\s*:\s*"%s"' % re.escape(nm), s) is no
 # Coordinates: widened panel coordinates (gold_withdraw is x=471..788, +196 after widening -> 667..984; the button follows on its right)
 def rune_craft(s):
     """符文合成按钮 + 弹框列表（宿主 dm_pouch.c / dm_runeup.c）。
-    按钮：储藏箱页脚，金币框右边、往上收（避开上面的符文格，点了别穿透到符文）；宽度只包住文字。
-    弹框：靠右，别压住左边的宝石 / 符文格；关闭用再点一次按钮，不放关闭钮。
+    坐标由用户用实景拖拽工具定的（工具里画的是实际渲染尺寸）：
+    按钮 841/1121 200x80，弹框 1189/29 575x1457（面板 1764x1486，超出会被裁所以收进来）。
     Rune-craft button + popup list (host dm_pouch.c / dm_runeup.c).
-    Button: stash footer right of the gold box, tucked up so it does not overlap the rune cells above (no tap-through); width only just fits the text.
-    Popup: pushed right so it never covers the gem / rune cells on the left; no close button (tap the button again to close)."""
+    Coordinates come from the user's live-screenshot drag tool (which draws real rendered sizes):
+    button 841/1121 200x80, popup 1189/29 575x1457 (panel is 1764x1486; trimmed so nothing spills outside)."""
     rows = []
-    for i in range(12):
-        y = 470 + i * 56
-        rows.append('                    { "type": "TextBoxWidget", "name": "TouchRcText%d", "fields": { "rect": { "x": 792, "y": %d, "width": 340, "height": 50 }, "text": "", "style": "$StyleGoldAmount" } },\n' % (i, y))
-        rows.append('                    { "type": "ButtonWidget", "name": "TouchRcRow%d", "fields": { "rect": { "x": 1148, "y": %d, "width": 190, "height": 50 }, "filename": "FrontEnd/HD/Final/FrontEnd_ButtonSmall", "textString": "@dmRcMake", "textColor": "$LightButtonTextColor", "text/style": "$StyleFEButtonText", "scale": 0.55, "onClickMessage": "PanelManager:ClosePanel:TouchRcRow%d" } },\n' % (i, y, i))
+    for i in range(32):
+        y = 84 + i * 44
+        rows.append('                    { "type": "TextBoxWidget", "name": "TouchRcText%d", "fields": { "rect": { "x": 1199, "y": %d, "width": 300, "height": 40 }, "text": "", "style": "$StyleGoldAmount", "scale": 0.62 } },\n' % (i, y))
+        rows.append('                    { "type": "ButtonWidget", "name": "TouchRcRow%d", "fields": { "rect": { "x": 1512, "y": %d, "width": 236, "height": 40 }, "filename": "FrontEnd/HD/Final/FrontEnd_ButtonSmall", "textString": "@dmRcMake", "textColor": "$LightButtonTextColor", "text/style": "$StyleFEButtonText", "onClickMessage": "PanelManager:ClosePanel:TouchRcRow%d" } },\n' % (i, y, i))
     box = ('\n                { "type": "Widget", "name": "TouchRuneCraftBox", "children": [\n'
-           '                    { "type": "NineTileImageWidget", "name": "TouchRuneCraftBg", "fields": { "rect": { "x": 938, "y": 1252, "width": 210, "height": 62 }, "filename": "PANEL/TooltipBorder/TooltipBorder", "backgroundColor": [0.0, 0.0, 0.0, 0.55], "tileScale": 0.5 } },\n'
-           '                    { "type": "ButtonWidget", "name": "TouchRuneCraft", "fields": { "rect": { "x": 938, "y": 1252, "width": 210, "height": 62 }, "filename": "FrontEnd/HD/Final/FrontEnd_ButtonSmall", "textString": "@dmRuneCraft", "textColor": "$LightButtonTextColor", "text/style": "$StyleFEButtonText", "scale": 0.55, "onClickMessage": "PanelManager:ClosePanel:TouchRuneCraft" } },\n'
+           '                    { "type": "ButtonWidget", "name": "TouchRuneCraft", "fields": { "rect": { "x": 841, "y": 1121, "width": 200, "height": 80 }, "filename": "FrontEnd/HD/Final/FrontEnd_ButtonSmall", "textString": "@dmRuneCraft", "textColor": "$LightButtonTextColor", "text/style": "$StyleFEButtonText", "onClickMessage": "PanelManager:ClosePanel:TouchRuneCraft" } },\n'
            '                    { "type": "Widget", "name": "TouchRcPanel", "children": [\n'
-           '                        { "type": "NineTileImageWidget", "name": "TouchRcBg", "fields": { "rect": { "x": 760, "y": 380, "width": 600, "height": 830 }, "filename": "PANEL/TooltipBorder/TooltipBorder", "backgroundColor": [0.0, 0.0, 0.0, 0.92], "tileScale": 1.0 } },\n'
-           '                        { "type": "TextBoxWidget", "name": "TouchRcTitle", "fields": { "rect": { "x": 792, "y": 396, "width": 400, "height": 60 }, "text": "@dmRuneCraft", "style": "$StyleGoldAmount" } },\n'
+           '                        { "type": "NineTileImageWidget", "name": "TouchRcBg", "fields": { "rect": { "x": 1189, "y": 29, "width": 575, "height": 1457 }, "filename": "PANEL/TooltipBorder/TooltipBorder", "backgroundColor": [0.0, 0.0, 0.0, 0.92], "tileScale": 1.0 } },\n'
+           '                        { "type": "TextBoxWidget", "name": "TouchRcTitle", "fields": { "rect": { "x": 1199, "y": 36, "width": 400, "height": 44 }, "text": "@dmRuneCraft", "style": "$StyleGoldAmount", "scale": 0.66 } },\n'
            + ''.join(rows) +
            '                    ] }\n'
            '                ] },\n')

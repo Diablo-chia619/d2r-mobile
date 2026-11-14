@@ -474,21 +474,21 @@ static const char *str_of(uint32_t code) { char k[5] = { 0 }; memcpy(k, &code, 4
 static int g_tip;
 // ---------- 符文合成弹框（储藏箱页脚按钮点开；12 行「N# ×数量」+「合成」） ----------
 // Rune-craft popup (opened by the stash-footer button; 12 rows of "N# x count" + a Craft button)
-static int g_rc, g_rc_no[12], g_rc_n;
+static int g_rc, g_rc_no[32], g_rc_n;
 int dm_runeup_start(int rune_no, char *why, int cap);   // dm_runeup.c
 static void rc_show(uint64_t root, int on) {
     uint64_t bg = find_w(root, "TouchRcBg", 1), title = find_w(root, "TouchRcTitle", 1), close = find_w(root, "TouchRcClose", 1);
-    for (int i = 0; i < 12; i++) { char nm[24]; snprintf(nm, sizeof nm, "TouchRcText%d", i); w_move(find_w(root, nm, 1), 99999, 0);
+    for (int i = 0; i < 32; i++) { char nm[24]; snprintf(nm, sizeof nm, "TouchRcText%d", i); w_move(find_w(root, nm, 1), 99999, 0);
         snprintf(nm, sizeof nm, "TouchRcRow%d", i); w_move(find_w(root, nm, 1), 99999, 0); }
     if (!on) { w_move(bg, 99999, 0); w_move(title, 99999, 0); w_move(close, 99999, 0); g_rc = 0; return; }
-    int dm_runeup_list(int *, int *, int); int nos[12], cnts[12];
-    int n = dm_runeup_list(nos, cnts, 12); g_rc_n = n; for (int i = 0; i < n; i++) g_rc_no[i] = nos[i];
+    int dm_runeup_list(int *, int *, int); int nos[32], cnts[32];
+    int n = dm_runeup_list(nos, cnts, 32); g_rc_n = n; for (int i = 0; i < n; i++) g_rc_no[i] = nos[i];
     for (int i = 0; i < n; i++) { char nm[24], line[64];
         snprintf(nm, sizeof nm, "TouchRcText%d", i); snprintf(line, sizeof line, "%d# ×%d", nos[i], cnts[i]); w_text(find_w(root, nm, 1), line);
         snprintf(nm, sizeof nm, "TouchRcRow%d", i);
-        w_move(find_w(root, nm, 1), 1148, 470 + i * 56); }
-    for (int i = 0; i < n; i++) { char nm[24]; snprintf(nm, sizeof nm, "TouchRcText%d", i); w_move(find_w(root, nm, 1), 792, 470 + i * 56); }
-    w_move(bg, 760, 380); w_move(title, 792, 396);
+        w_move(find_w(root, nm, 1), 1512, 84 + i * 44); }
+    for (int i = 0; i < n; i++) { char nm[24]; snprintf(nm, sizeof nm, "TouchRcText%d", i); w_move(find_w(root, nm, 1), 1199, 84 + i * 44); }
+    w_move(bg, 1189, 29); w_move(title, 1199, 36);
     g_rc = 1; LOG("符文合成：弹框开了，%d 行", n);
 }
 static int g_rc_init;
@@ -546,7 +546,7 @@ void dm_pouch_on_uimsg(const char *cat, const char *act, const char *arg) {   //
     if (!strcmp(arg, "TouchRcClose")) { uint64_t root = *(uint64_t *)(B + 0x2f05458); rc_show(root, 0); LOG("符文合成：关了弹框（点了关闭）"); return; }
     if (!strncmp(arg, "TouchRcRow", 10)) {   // 点某一行 → 合一个那一号 | a row was tapped -> craft one of that rune
         int i = atoi(arg + 10); uint64_t root = *(uint64_t *)(B + 0x2f05458);
-        int no = (i >= 0 && i < g_rc_n && i < 12) ? g_rc_no[i] : 0;
+        int no = (i >= 0 && i < g_rc_n && i < 32) ? g_rc_no[i] : 0;
         if (no > 0) { char why[200] = ""; int r = dm_runeup_start(no, why, sizeof why);
             LOG("%s符文合成：点第 %d 行 → %d 号 %s", r ? "【红】" : "", i + 1, no, r ? why : "开始");
             snprintf(g_notice, sizeof g_notice, r ? "符文合成没开始：%s" : "开始合成 %d 号", r ? why : no); atomic_store(&g_notice_req, 1); }
