@@ -377,6 +377,8 @@ typedef struct { uint32_t id, code; uint8_t to_vault, page; } sitem;   // page�
 static sitem g_st[128]; static int g_nst, g_ist = -1, g_sv, g_sg, g_sp, g_sleft, g_snear; static int g_sfull, g_sworse; static uint64_t g_sfr;   // g_sfull 背包不足换不了 / g_sworse 不如编年史那件 | g_sfull: no room to swap; g_sworse: worse than the stored one
 static _Atomic int g_store_req, g_pouch_tap, g_rejuv_req;   // g_rejuv_req：1 = 点了小紫框，2 = 点了大紫框 | 1 = small rejuv box tapped, 2 = full rejuv box tapped
 static char g_notice[160]; static _Atomic int g_notice_req;
+void dm_pouch_notice(const char *text) {   // 借用「存放」那条提示通道（服务端拍发原版系统提示），别的功能往这里塞话 | reuse the deposit notice channel (the server tick posts the original system notice)
+    if (!text) return; snprintf(g_notice, sizeof g_notice, "%s", text); atomic_store(&g_notice_req, 1); }
 // 这件还在不在原来那一页（客户端物品栏；方式 0 = 在容器里）
 // Whether this item is still on its original page (client inventory; mode 0 = in a container)
 static uint64_t page_item(uint64_t pl, uint32_t id, int page) {

@@ -61,6 +61,8 @@ static uint64_t held_item(uint64_t pl) {   // 光标上那件（物品栏 +0x40�
     uint64_t inv = pl ? *(uint64_t *)(pl + 0x90) : 0, h = inv && *(uint32_t *)inv == 0x01020304 ? *(uint64_t *)(inv + 0x40) : 0;
     return h && *(uint32_t *)h == 4 ? h : 0;
 }
+void dm_pouch_notice(const char *text);   // 宿主提示通道（dm_pouch.c） | host notice channel (dm_pouch.c)
+static void rune_name(uint8_t *b, uint64_t t, int no, char *out, size_t n);   // 定义在文件末尾，这里先声明 | defined at the end of the file
 static const char *loc_key(uint8_t *b, const char *code) { struct { const char *p; uint64_t k; } q = { code, 3 }; const char *s = ((const char *(*)(void *))(b + 0x7f5630))(&q); return s && *s ? s : code; }
 
 // ---------- 配方表（原版 gems 表的符文升级段） ----------
@@ -197,7 +199,8 @@ int dm_runeup_busy(void) { return g_up.st != 0; }
 static uint64_t up_tables(uint8_t *b, uint64_t pl) { uint64_t it = pl ? first_item(pl) : 0; return it ? tables(b, it) : 0; }
 
 static void up_fail(const char *why) {
-    if (g_up.st) LOG("【红】符文升级：停（%s；造到 %d 号，目标 %d 号）", why, g_up.m, g_up.to);
+    if (g_up.st) { LOG("【红】符文升级：停（%s；造到 %d 号，目标 %d 号）", why, g_up.m, g_up.to);
+        char line[200]; snprintf(line, sizeof line, "符文合成停了：%s", why); dm_pouch_notice(line); }
     g_up.st = 0;
 }
 
@@ -257,7 +260,8 @@ void dm_runeup_pump(void) {
         if (cube_of_cls(b, pl, g_cls_rune[g_up.m]) < 1) return;
         LOG("符文升级：造出 1 颗 %d 号（魔盒里 %d 颗）", g_up.m, cube_of_cls(b, pl, g_cls_rune[g_up.m]));
         inv_t v; scan_inv(b, pl, &v);
-        if (v.rune[g_up.to] >= 1) { LOG("符文升级：%d 号到手，收工", g_up.to); g_up.st = 0; return; }
+        if (v.rune[g_up.to] >= 1) { LOG("符文升级：%d 号到手，收工", g_up.to); g_up.st = 0;
+            { char rn[64] = ""; rune_name(b, tables(b, cube_it), g_up.to, rn, sizeof rn); char line[200]; snprintf(line, sizeof line, "符文合成完成：%s", rn); dm_pouch_notice(line); } return; }
         plan_t p; if (make_plan(b, tables(b, cube_it), g_up.to, &p)) { up_fail("材料不够了"); return; }
         int next = 0; for (int i = 2; i <= g_up.to; i++) if (p.craft[i] > 0) { next = i; break; }
         if (!next) { up_fail("计划里没有可造的号"); return; }
@@ -326,10 +330,12 @@ int dm_runeup_tap_empty(int rune_no) {   // 返回 1 = 这一下吃掉（第一�
     if (g_tap_no != rune_no) {
         g_tap_no = rune_no;
         LOG("符文升级：点了空格 %d 号（%s）→ 记下，再点一次就开始合成", rune_no, rn);
+        { char line[200]; snprintf(line, sizeof line, "再点一次合成 %s", rn); dm_pouch_notice(line); }
         return 1; }
     g_tap_no = 0;
     char why[200] = "";
     int r = dm_runeup_start(rune_no, why, sizeof why);
     LOG("%s符文升级：点空格 %d 号（%s）→ %s", r ? "【红】" : "", rune_no, rn, r ? why : "开始合成");
+    { char line[240]; snprintf(line, sizeof line, r ? "符文合成没开始：%s" : "开始合成 %s", r ? why : rn); dm_pouch_notice(line); }
     return 1;
 }
