@@ -277,8 +277,8 @@ int dm_runeup_check(int rune_no, char *why, int cap) {
     if (why && cap > 0) {
         char a[128] = "", c[128] = "";
         if (p.short_rune >= 0) { char c2[4] = { 'r', (char)('0' + p.short_rune / 10), (char)('0' + p.short_rune % 10), 0 };
-            snprintf(a, sizeof a, dm_str(b, "dmRwNeedRune"), loc_key(b, c2), p.short_cnt); }
-        if (p.short_gem >= 0) snprintf(c, sizeof c, dm_str(b, "dmRwNeedGem"), loc_key(b, g_gem_code[p.short_gem]), p.short_cnt);
+            snprintf(a, sizeof a, dm_ui("dmRwNeedRune"), loc_key(b, c2), p.short_cnt); }
+        if (p.short_gem >= 0) snprintf(c, sizeof c, dm_ui("dmRwNeedGem"), loc_key(b, g_gem_code[p.short_gem]), p.short_cnt);
         snprintf(why, cap, "%s%s%s", a, a[0] && c[0] ? " / " : "", c);
     }
     return 1;
@@ -286,13 +286,13 @@ int dm_runeup_check(int rune_no, char *why, int cap) {
 
 int dm_runeup_start(int rune_no, char *why, int cap) {
     uint8_t *b = rb(); if (!b) return 1; uint64_t pl = player(b); if (!pl) return 1;
-    uint32_t cid = 0; uint64_t cube = find_cube(b, pl, &cid); if (!cube) { if (why) snprintf(why, cap, "%s", dm_str(b, "dmRwNoCube")); return 1; }
+    uint32_t cid = 0; uint64_t cube = find_cube(b, pl, &cid); if (!cube) { if (why) snprintf(why, cap, "%s", dm_ui("dmRwNoCube")); return 1; }
     build_cls_cache(b, tables(b, cube));
-    if (cube_others(b, pl)) { if (why) snprintf(why, cap, "%s", dm_str(b, "dmRwCubeBusy")); return 1; }
-    plan_t p; if (make_plan(b, tables(b, cube), rune_no, &p)) { if (why) snprintf(why, cap, "%s", dm_str(b, "dmRwNoMat")); return 1; }
+    if (cube_others(b, pl)) { if (why) snprintf(why, cap, "%s", dm_ui("dmRwCubeBusy")); return 1; }
+    plan_t p; if (make_plan(b, tables(b, cube), rune_no, &p)) { if (why) snprintf(why, cap, "%s", dm_ui("dmRwNoMat")); return 1; }
     memset(&g_up, 0, sizeof g_up); g_up.to = rune_no; g_up.cube = cid;
     int first = 0; for (int i = 2; i <= rune_no; i++) if (p.craft[i] > 0) { first = i; break; }
-    if (!first) { if (why) snprintf(why, cap, "%s", dm_str(b, "dmRwNoMat")); return 1; }
+    if (!first) { if (why) snprintf(why, cap, "%s", dm_ui("dmRwNoMat")); return 1; }
     g_up.m = first; g_up.want_rune = RCP[first].n; g_up.want_gem = RCP[first].gem[0] ? 1 : 0; g_up.st = 1; g_up.wait = 0;
     LOG("符文升级：开始补 %d 号（第一轮造 %d 号，要 %d 颗 %d 号%s，魔盒 id%u）", rune_no, first, g_up.want_rune, RCP[first].from, g_up.want_gem ? " + 宝石" : "", cid);
     return 0;

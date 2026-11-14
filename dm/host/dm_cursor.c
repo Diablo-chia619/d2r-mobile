@@ -611,7 +611,9 @@ static int item_walk(uint64_t w, uint64_t xy, int dep, char *hit, size_t hn) {
     // 高级仓库（宝石 / 材料 / 符文页）的成叠格：每格一个控件，名字是物品码（r01、gcw…），认虚表 main+0x20892f8（控件树转储）；它们的容器 advancedstash_* 自己没有矩形、命不中
     // Stacked cells of the advanced stash (gem / material / rune pages): one widget per cell, named by item code (r01, gcw...), identified by vtable main+0x20892f8 (widget tree dump); their containers advancedstash_* have no rectangle of their own and cannot be hit
     if (nm && (item_name((const char *)nm) || (g_iw_base && (*(uint64_t *)w - g_iw_base == 0x20892f8 || *(uint64_t *)w - g_iw_base == 0x20898e8)))) {   /* 0x20898e8 = 单件任务槽（ImbueSocketWidget）：槽里那件就是手上那件，从槽上起手拖到背包格 = 放回背包 | 0x20898e8 = single-item task slot (ImbueSocketWidget): the item in the slot is the item in hand; starting a drag on the slot and dragging to an inventory cell = put it back into the inventory */ uint64_t vt = *(uint64_t *)w, fn = *(uint64_t *)(vt + 0x48);
-        if (((int (*)(uint64_t, uint64_t))fn)(w, xy) & 1) { strlcpy(hit, (const char *)nm, hn); dm_wref_set(&g_slot, w); return 1; } }
+        if (((int (*)(uint64_t, uint64_t))fn)(w, xy) & 1) { strlcpy(hit, (const char *)nm, hn); dm_wref_set(&g_slot, w);
+            { static char lastnm[8]; if (nm && ((const char *)nm)[0] == 'r' && strcmp(lastnm, (const char *)nm)) { strlcpy(lastnm, (const char *)nm, sizeof lastnm); LOG("高级仓库格命中：%s（成叠格虚表 0x20892f8）", (const char *)nm); } }
+            return 1; } }
     if (!ch || n > 256) return 0;
     for (uint64_t i = 0; i < n; i++) if (item_walk(*(uint64_t *)(ch + 8 * i), xy, dep + 1, hit, hn)) return 1;
     return 0;
