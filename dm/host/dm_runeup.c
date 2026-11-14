@@ -299,6 +299,15 @@ int dm_runeup_start(int rune_no, char *why, int cap) {
 }
 
 
+static void rune_name(uint8_t *b, uint64_t t, int no, char *out, size_t n) {   // 符文名（原版串） | rune name (original game string)
+    out[0] = 0; if (no < 1 || no > 33 || !t) return;
+    uint64_t ir = *(uint64_t *)(t + 0x15c0); uint32_t in = *(uint32_t *)(t + 0x15c8); int cls = g_cls_rune[no];
+    if (!ir || cls < 0 || (uint32_t)cls >= in) return;
+    const char *c = (const char *)(ir + (uint64_t)cls * 0x1c0 + 0x80);
+    struct { const char *p; uint64_t k; } q = { c, 3 }; const char *s = ((const char *(*)(void *))(b + 0x7f5630))(&q);
+    snprintf(out, n, "%s", s && *s ? s : c);
+}
+
 // ---------- 符文页空格：点一下记下、点第二下开始合成 ----------
 // Rune page empty cell: first tap arms it, the second tap starts crafting
 static int g_tap_no;
