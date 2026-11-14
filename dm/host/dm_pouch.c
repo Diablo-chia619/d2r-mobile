@@ -483,12 +483,13 @@ static void rc_show(uint64_t root, int on) {
     if (!on) { w_move(bg, 99999, 0); w_move(title, 99999, 0); w_move(close, 99999, 0); g_rc = 0; return; }
     int dm_runeup_list(int *, int *, int); int nos[32], cnts[32];
     int n = dm_runeup_list(nos, cnts, 32); g_rc_n = n; for (int i = 0; i < n; i++) g_rc_no[i] = nos[i];
-    for (int i = 0; i < n; i++) { char nm[24], line[64];
+    for (int i = 0; i < n; i++) {   // 两列：前 16 行在左列，之后在右列 | two columns: first 16 rows on the left, the rest on the right
+        int col = i / 16, row = i % 16, y = 100 + row * 84;
+        char nm[24], line[64];
         snprintf(nm, sizeof nm, "TouchRcText%d", i); snprintf(line, sizeof line, "%d# ×%d", nos[i], cnts[i]); w_text(find_w(root, nm, 1), line);
-        snprintf(nm, sizeof nm, "TouchRcRow%d", i);
-        w_move(find_w(root, nm, 1), 1512, 84 + i * 44); }
-    for (int i = 0; i < n; i++) { char nm[24]; snprintf(nm, sizeof nm, "TouchRcText%d", i); w_move(find_w(root, nm, 1), 1199, 84 + i * 44); }
-    w_move(bg, 1189, 29); w_move(title, 1199, 36);
+        w_move(find_w(root, nm, 1), 1200 + col * 278, y);
+        snprintf(nm, sizeof nm, "TouchRcRow%d", i); w_move(find_w(root, nm, 1), 1322 + col * 278, y); }
+    w_move(bg, 1189, 29); w_move(title, 1200, 40);
     g_rc = 1; LOG("符文合成：弹框开了，%d 行", n);
 }
 static int g_rc_init;

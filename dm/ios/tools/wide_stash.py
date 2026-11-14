@@ -66,21 +66,23 @@ def _has(s, nm): return re.search(r'"name"\s*:\s*"%s"' % re.escape(nm), s) is no
 # Coordinates: widened panel coordinates (gold_withdraw is x=471..788, +196 after widening -> 667..984; the button follows on its right)
 def rune_craft(s):
     """符文合成按钮 + 弹框列表（宿主 dm_pouch.c / dm_runeup.c）。
-    坐标由用户用实景拖拽工具定的（工具里画的是实际渲染尺寸）：
-    按钮 841/1121 200x80，弹框 1189/29 575x1457（面板 1764x1486，超出会被裁所以收进来）。
-    Rune-craft button + popup list (host dm_pouch.c / dm_runeup.c).
-    Coordinates come from the user's live-screenshot drag tool (which draws real rendered sizes):
-    button 841/1121 200x80, popup 1189/29 575x1457 (panel is 1764x1486; trimmed so nothing spills outside)."""
+    两列排版（每列 16 行），因为 32 行单列太挤；按钮用原版 FrontEnd_ButtonSmall 的合适比例（140x44）。
+    坐标由用户用实景拖拽工具定的：按钮 841/1121 200x80，弹框 1189/29 575x1457。
+    Two columns of 16 rows each (32 rows in one column was too cramped); buttons use the stock FrontEnd_ButtonSmall at a sane ratio (140x44).
+    Coordinates came from the user's live-screenshot drag tool: button 841/1121 200x80, popup 1189/29 575x1457."""
     rows = []
     for i in range(32):
-        y = 84 + i * 44
-        rows.append('                    { "type": "TextBoxWidget", "name": "TouchRcText%d", "fields": { "rect": { "x": 1199, "y": %d, "width": 300, "height": 40 }, "text": "", "style": "$StyleGoldAmount", "scale": 0.62 } },\n' % (i, y))
-        rows.append('                    { "type": "ButtonWidget", "name": "TouchRcRow%d", "fields": { "rect": { "x": 1512, "y": %d, "width": 236, "height": 40 }, "filename": "FrontEnd/HD/Final/FrontEnd_ButtonSmall", "textString": "@dmRcMake", "textColor": "$LightButtonTextColor", "text/style": "$StyleFEButtonText", "onClickMessage": "PanelManager:ClosePanel:TouchRcRow%d" } },\n' % (i, y, i))
+        col, row = i // 16, i % 16
+        y = 100 + row * 84
+        xt = 1200 + col * 278
+        xb = 1322 + col * 278
+        rows.append('                    { "type": "TextBoxWidget", "name": "TouchRcText%d", "fields": { "rect": { "x": %d, "y": %d, "width": 122, "height": 44 }, "text": "", "style": "$StyleGoldAmount", "scale": 0.62 } },\n' % (i, xt, y))
+        rows.append('                    { "type": "ButtonWidget", "name": "TouchRcRow%d", "fields": { "rect": { "x": %d, "y": %d, "width": 140, "height": 44 }, "filename": "FrontEnd/HD/Final/FrontEnd_ButtonSmall", "textString": "@dmRcMake", "textColor": "$LightButtonTextColor", "text/style": "$StyleFEButtonText", "onClickMessage": "PanelManager:ClosePanel:TouchRcRow%d" } },\n' % (i, xb, y, i))
     box = ('\n                { "type": "Widget", "name": "TouchRuneCraftBox", "children": [\n'
            '                    { "type": "ButtonWidget", "name": "TouchRuneCraft", "fields": { "rect": { "x": 841, "y": 1121, "width": 200, "height": 80 }, "filename": "FrontEnd/HD/Final/FrontEnd_ButtonSmall", "textString": "@dmRuneCraft", "textColor": "$LightButtonTextColor", "text/style": "$StyleFEButtonText", "onClickMessage": "PanelManager:ClosePanel:TouchRuneCraft" } },\n'
            '                    { "type": "Widget", "name": "TouchRcPanel", "children": [\n'
-           '                        { "type": "NineTileImageWidget", "name": "TouchRcBg", "fields": { "rect": { "x": 1189, "y": 29, "width": 575, "height": 1457 }, "filename": "PANEL/TooltipBorder/TooltipBorder", "backgroundColor": [0.0, 0.0, 0.0, 0.92], "tileScale": 1.0 } },\n'
-           '                        { "type": "TextBoxWidget", "name": "TouchRcTitle", "fields": { "rect": { "x": 1199, "y": 36, "width": 400, "height": 44 }, "text": "@dmRuneCraft", "style": "$StyleGoldAmount", "scale": 0.66 } },\n'
+           '                        { "type": "NineTileImageWidget", "name": "TouchRcBg", "fields": { "rect": { "x": 1189, "y": 29, "width": 575, "height": 1457 }, "filename": "PANEL/TooltipBorder/TooltipBorder", "backgroundColor": [0.0, 0.0, 0.0, 0.88], "tileScale": 1.0 } },\n'
+           '                        { "type": "TextBoxWidget", "name": "TouchRcTitle", "fields": { "rect": { "x": 1200, "y": 40, "width": 540, "height": 50 }, "text": "@dmRuneCraft", "style": "$StyleGoldAmount", "scale": 0.78 } },\n'
            + ''.join(rows) +
            '                    ] }\n'
            '                ] },\n')

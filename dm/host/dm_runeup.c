@@ -382,12 +382,19 @@ int dm_runeup_list(int *no_out, int *cnt_out, int max) {
             int def = need[i] - v.rune[i]; if (def < 0) def = 0;
             if (def) need[i - 1] += def * RCP[i].n;
         }
+        // 能合几颗 = 各层「现货 / 这层总需求」的最小值。目标号自己那层跳过——它本来就是合出来的，
+        // 手上 0 颗不代表合不了（这正是之前 2#/20# 被判「合不了」的原因）。
+        // How many can be crafted = min over layers of stock/requirement. The target number itself is skipped:
+        // it is what gets crafted, so having zero in hand does not mean it is impossible (that was the earlier bug).
         int cnt = 9999, ok = 0;
         for (int i = 1; i <= no; i++) {
-            if (!need[i]) continue; ok = 1; int q = v.rune[i] / need[i]; if (q < cnt) cnt = q;
-            if (RCP[i].gem[0]) { int gi = gem_idx(RCP[i].gem); if (gi < 0 || v.gem[gi] < 1) { cnt = 0; break; } }   // 这一层要的宝石一颗都没有 → 合不了 | no gem at all for this layer -> cannot craft
+            if (!need[i]) continue;
+            if (RCP[i].gem[0]) { int gi = gem_idx(RCP[i].gem); if (gi < 0 || v.gem[gi] < 1) { cnt = 0; break; } }
+            if (i == no) continue;
+            ok = 1; int q = v.rune[i] / need[i]; if (q < cnt) cnt = q;
         }
-        if (!ok || cnt < 1) continue;
+        if (cnt == 9999) cnt = 1;   // 只有目标号那层有需求（下层现货够）→ 至少 1 颗 | only the target layer had demand -> at least 1
+        if (cnt < 1) continue;
         no_out[n] = no; cnt_out[n] = cnt; n++;
     }
     return n;
