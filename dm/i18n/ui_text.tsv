@@ -63,6 +63,7 @@ dmBrUbers	超级墨菲斯托、超级迪亚波罗、超级巴尔	Uber Mephisto, 
 dmBlissTitle	极乐世界	Elysium	Elíseo		Elísio	Элизиум	엘리시움	建角页「极乐世界」勾选标题（touch_layout.py）
 dmBlissDesc	暗金 ×5、套装 ×3、符文 ×5；Boss 永远按首次击败掉落。	Unique ×5, Set ×3, Runes ×5; bosses always drop as on first kill.	Únicos ×5, conjuntos ×3, runas ×5; los jefes siempre sueltan botín de primera muerte.		Únicos ×5, conjuntos ×3, runas ×5; os chefes sempre soltam como na primeira morte.	Уник. ×5, сет ×3, руны ×5; боссы всегда дропают как при первом убийстве.	유니크 ×5, 세트 ×3, 룬 ×5; 보스는 항상 첫 처치처럼 드롭.	建角页「极乐世界」说明
 dmRwHint	先移到个人仓库或背包	Move out of shared stash first	Sácalo antes del alijo compartido	Sácalo antes del Arcón compartido	Mova para fora do baú compartilhado primeiro	Сначала выньте из общего тайника	먼저 공유 창고에서 꺼내세요	符文之语清单：底材在共享仓库时的灰字
+dmRuneCraft	符文合成	Rune Craft	Fabricar runas		Fabricar runas	Создать руны	룬 합성	储藏箱页脚的符文合成按钮（宽 300 单位）
 dmRwGo	一键合成	Craft	Crear		Criar	Создать	합성	符文之语清单每行 / 详情页的合成按钮
 dmRwNeedRune	缺 %s ×%d	Need %s ×%d	Falta %s ×%d		Falta %s ×%d	Не хватает %s ×%d	%s ×%d 부족	符文升级：缺哪号符文、几颗
 dmRwNeedGem	缺 %s ×%d	Need %s ×%d	Falta %s ×%d		Falta %s ×%d	Не хватает %s ×%d	%s ×%d 부족	符文升级：缺哪种宝石、几颗

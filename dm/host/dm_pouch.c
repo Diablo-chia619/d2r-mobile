@@ -516,6 +516,11 @@ static void ui_pump(void) {
 void dm_pouch_on_uimsg(const char *cat, const char *act, const char *arg) {   // 界面消息回调（diag.c）：我们的两个按钮发 ClosePanel:TouchPouch / TouchStore | UI message callback (diag.c): our two buttons send ClosePanel:TouchPouch / TouchStore
     if (!cat || !act || !arg || strcmp(cat, "PanelManager") || strcmp(act, "ClosePanel")) return;
     if (!strcmp(arg, "TouchPouch")) atomic_store(&g_pouch_tap, 1);
+    if (!strcmp(arg, "TouchRuneCraft")) {   // 符文合成按钮：列出每号还能合几个 | rune-craft button: list how many of each rune can still be made
+        void dm_runeup_list_text(char *, int); static char t[420];
+        dm_runeup_list_text(t, sizeof t);
+        snprintf(g_notice, sizeof g_notice, "符文合成：%s", t); atomic_store(&g_notice_req, 1);
+        LOG("符文合成：点了按钮 → %s", t); }
     else if (!strcmp(arg, "TouchStore") || !strcmp(arg, "TouchPadStore")) atomic_store(&g_store_req, 1);   // TouchPadStore = 手柄版暂停菜单的「存放」行（touch_layout.py pad_pause） | TouchPadStore = the "Deposit" row of the controller pause menu (touch_layout.py pad_pause)
     else if (!strcmp(arg, "TouchRejuvS")) atomic_store(&g_rejuv_req, 1);   // 小紫框：从囊里取一瓶补到腰带 | small rejuv box: take one from the pouch and top up the belt
     else if (!strcmp(arg, "TouchRejuvL")) atomic_store(&g_rejuv_req, 2);   // 大紫框 | full rejuv box

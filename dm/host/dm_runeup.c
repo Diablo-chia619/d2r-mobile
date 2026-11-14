@@ -339,3 +339,25 @@ int dm_runeup_tap_empty(int rune_no) {   // 返回 1 = 这一下吃掉（第一�
     { char line[240]; snprintf(line, sizeof line, r ? "符文合成没开始：%s" : "开始合成 %s", r ? why : rn); dm_pouch_notice(line); }
     return 1;
 }
+
+// 符文合成按钮用：从 2 号往上逐号算「还能合几个」，只写 >0 的号（缺的号不列，列表短）
+// For the rune-craft button: from No.2 upward, how many of each can still be made; only numbers with >0 are written (missing ones are left out, keeping the list short)
+void dm_runeup_list_text(char *out, int cap) {
+    out[0] = 0; uint8_t *b = rb(); if (!b || cap < 8) return;
+    uint64_t pl = player(b); if (!pl) return;
+    build_cls_cache(b, up_tables(b, pl));
+    inv_t v; scan_inv(b, pl, &v);
+    int gem[40]; for (int k = 0; k < g_cls_gem_n && k < 40; k++) gem[k] = v.gem[k];
+    int n = 0; char rn[64];
+    for (int no = 2; no <= 33; no++) {
+        int need = RCP[no].n, from = RCP[no].from, cnt = v.rune[from] / need;
+        if (RCP[no].gem[0]) { int gi = gem_idx(RCP[no].gem); if (gi >= 0 && gem[gi] < cnt) cnt = gem[gi]; }
+        if (cnt <= 0) continue;
+        v.rune[from] -= cnt * need; v.rune[no] += cnt;
+        if (RCP[no].gem[0]) { int gi = gem_idx(RCP[no].gem); if (gi >= 0) gem[gi] -= cnt; }
+        rune_name(b, up_tables(b, pl), no, rn, sizeof rn);
+        n += snprintf(out + n, cap - n, "%s%s ×%d", n ? "  " : "", rn, cnt);
+        if (n >= cap - 16) break;
+    }
+    if (!n) snprintf(out, cap, "%s", dm_ui("dmRwNoMat"));
+}

@@ -65,6 +65,7 @@ static const struct { const char *k, *zh, *en, *es, *mx, *pt, *ru, *ko; } k_dm_i
     { "dmBlissTitle", "极乐世界", "Elysium", "Elíseo", "Elíseo", "Elísio", "Элизиум", "엘리시움" },
     { "dmBlissDesc", "暗金 ×5、套装 ×3、符文 ×5；Boss 永远按首次击败掉落。", "Unique ×5, Set ×3, Runes ×5; bosses always drop as on first kill.", "Únicos ×5, conjuntos ×3, runas ×5; los jefes siempre sueltan botín de primera muerte.", "Únicos ×5, conjuntos ×3, runas ×5; los jefes siempre sueltan botín de primera muerte.", "Únicos ×5, conjuntos ×3, runas ×5; os chefes sempre soltam como na primeira morte.", "Уник. ×5, сет ×3, руны ×5; боссы всегда дропают как при первом убийстве.", "유니크 ×5, 세트 ×3, 룬 ×5; 보스는 항상 첫 처치처럼 드롭." },
     { "dmRwHint", "先移到个人仓库或背包", "Move out of shared stash first", "Sácalo antes del alijo compartido", "Sácalo antes del Arcón compartido", "Mova para fora do baú compartilhado primeiro", "Сначала выньте из общего тайника", "먼저 공유 창고에서 꺼내세요" },
+    { "dmRuneCraft", "符文合成", "Rune Craft", "Fabricar runas", "Fabricar runas", "Fabricar runas", "Создать руны", "룬 합성" },
     { "dmRwGo", "一键合成", "Craft", "Crear", "Crear", "Criar", "Создать", "합성" },
     { "dmRwNeedRune", "缺 %s ×%d", "Need %s ×%d", "Falta %s ×%d", "Falta %s ×%d", "Falta %s ×%d", "Не хватает %s ×%d", "%s ×%d 부족" },
     { "dmRwNeedGem", "缺 %s ×%d", "Need %s ×%d", "Falta %s ×%d", "Falta %s ×%d", "Falta %s ×%d", "Не хватает %s ×%d", "%s ×%d 부족" },

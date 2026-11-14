@@ -60,6 +60,19 @@ def trove_slots(s):
 
 TOUCH_ONLY = {'TouchStashLeft', 'TouchStashRight', 'close'}   # 触屏版插回的控件（touch_layout INGAME）：手柄版布局（原版 + 功能改动，gen_romfs_overlay.py）里没有，没有就不挪 | Widgets re-inserted for the touch version (touch_layout INGAME): absent from the controller layouts (original + feature changes, gen_romfs_overlay.py); if absent, nothing is moved
 def _has(s, nm): return re.search(r'"name"\s*:\s*"%s"' % re.escape(nm), s) is not None
+# 符文合成按钮（宿主 dm_runeup.c）：储藏箱页脚、金币框右边那个空位。用户指定位置，以后新功能往下排。
+# 坐标：加宽后的面板坐标（gold_withdraw 原 x=471..788，加宽 +196 → 667..984，按钮接在它右边）
+# Rune-craft button (host dm_runeup.c): the free spot at the stash footer to the right of the gold box. The user picked this spot; future features stack below.
+# Coordinates: widened panel coordinates (gold_withdraw is x=471..788, +196 after widening -> 667..984; the button follows on its right)
+def rune_craft(s):
+    box = ('\n                { "type": "Widget", "name": "TouchRuneCraftBox", "children": [\n'
+           '                    { "type": "NineTileImageWidget", "name": "TouchRuneCraftBg", "fields": { "rect": { "x": 1012, "y": 1290, "width": 300, "height": 100 }, "filename": "PANEL/TooltipBorder/TooltipBorder", "backgroundColor": [0.0, 0.0, 0.0, 0.55], "tileScale": 0.5 } },\n'
+           '                    { "type": "ButtonWidget", "name": "TouchRuneCraft", "fields": { "rect": { "x": 1012, "y": 1290, "width": 300, "height": 100 }, "filename": "FrontEnd/HD/Final/FrontEnd_ButtonSmall", "textString": "@dmRuneCraft", "textColor": "$LightButtonTextColor", "text/style": "$StyleFEButtonText", "onClickMessage": "PanelManager:ClosePanel:TouchRuneCraft" } }\n'
+           '                ] },\n')
+    i = s.index('"children"', s.index('"name": "advancedstash_horadriccube"')); i = s.index('[', i) + 1
+    print("wide_stash：符文合成按钮插入到 advancedstash_horadriccube.children（插入点 %d，长度 %d）" % (i, len(s)))
+    return s[:i] + box + s[i:]
+
 def bank_layout(text):
     s = text; n0 = s.count('"cellCount": { "x": 10, "y": 10 }')
     if n0 != 1: raise SystemExit('wide_stash：储藏箱格子 cellCount 10×10 应为 1 处，找到 %d 处（原版布局变了？）' % n0)
@@ -75,6 +88,7 @@ def bank_layout(text):
     for nm in ('advancedstash_gems', 'advancedstash_materials', 'advancedstash_runes', 'advancedstash_horadriccube'): s = _container_x(s, nm, half)
     s = _shift(s, 'advancedstash_horadriccube', -2 * __import__('gen_trove_art').SHIFT)   # 合成格（连同转化钮）跟着底图里的台座左移 | the crafting slot (with its Transmute button) shifts left with the pedestal in the background
     s = vault_tab(s)
+    s = rune_craft(s)
     return s
 
 # 编年史仓库第 3 步（储藏箱第六个页签「编年史」）。
