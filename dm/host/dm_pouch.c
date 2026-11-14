@@ -374,7 +374,7 @@ static void auto_pick(uint64_t pl, uint64_t fr) {
 // ---- 存放：一件一件做
 // ---- Deposit: done one item at a time
 typedef struct { uint32_t id, code; uint8_t to_vault, page; } sitem;   // page：这件原来在哪一页（0 背包 / 3 魔盒） | page: which page this item was originally on (0 inventory / 3 Horadric Cube)
-static sitem g_st[128]; static int g_nst, g_ist = -1, g_sv, g_sg, g_sp, g_sleft, g_snear; static uint64_t g_sfr;
+static sitem g_st[128]; static int g_nst, g_ist = -1, g_sv, g_sg, g_sp, g_sleft, g_snear; static int g_sfull, g_sworse; static uint64_t g_sfr;   // g_sfull 背包不足换不了 / g_sworse 不如编年史那件 | g_sfull: no room to swap; g_sworse: worse than the stored one
 static _Atomic int g_store_req, g_pouch_tap, g_rejuv_req;   // g_rejuv_req：1 = 点了小紫框，2 = 点了大紫框 | 1 = small rejuv box tapped, 2 = full rejuv box tapped
 static char g_notice[160]; static _Atomic int g_notice_req;
 // 这件还在不在原来那一页（客户端物品栏；方式 0 = 在容器里）
@@ -404,7 +404,7 @@ static int vault_better(uint8_t *b, uint64_t G, uint64_t new_it, int kind, int i
 static void store_begin(uint64_t pl) {
     uint64_t G = g_lastG; uint8_t *b = B;
     int ncube = 0;
-    g_nst = 0; g_sv = g_sg = g_sp = g_sleft = 0; int vault = dm_vault_ready(), adv = adv_stash_unit(pl) != 0; g_snear = atomic_load(&g_near_pub);
+    g_nst = 0; g_sv = g_sg = g_sp = g_sleft = g_sfull = g_sworse = 0; int vault = dm_vault_ready(), adv = adv_stash_unit(pl) != 0; g_snear = atomic_load(&g_near_pub);
     uint64_t inv = *(uint64_t *)(pl + 0x90), it = inv && *(uint32_t *)inv == 0x01020304 ? *(uint64_t *)(inv + 0x10) : 0;
     for (int k = 0; it && k < 2048 && g_nst < 128; k++) { uint64_t d = *(uint64_t *)(it + 0x10); if (!d) break;
         // 来源页：背包（页 0）全套规则；魔盒（页 3）只搬已鉴定的暗金 / 套装进编年史——魔盒里的符文 / 宝石不动：
@@ -424,7 +424,7 @@ static void store_begin(uint64_t pl) {
                     if (!dm_vault_has(vk, vi)) { g_st[g_nst++] = (sitem){ id, key, 1, (uint8_t)page }; ncube += page == 3; }   // 没有同款：照旧存
                     else { int cmp = vault_better(b, G, it, vk, vi);
                         if (cmp > 0) { g_st[g_nst++] = (sitem){ id, key, 1, (uint8_t)page }; ncube += page == 3; LOG("编年史：新的比旧件好（%d）→ 替换，旧件回背包", cmp); }
-                        else { if (page == 0) g_sleft++; LOG("编年史：新的不如旧件（%d）→ 不替换", cmp); } }
+                        else { if (page == 0) g_sworse++; LOG("编年史：新的不如旧件（%d）→ 不替换", cmp); } }
                 } else if (page == 0) g_sleft++; } }
         it = *(uint64_t *)(d + 0xb0); }
     g_ist = 0; g_sfr = 0; LOG("存放：背包里 %d 件、魔盒里 %d 件要存（编年史里已有同件 / 没有编年史仓库的 %d 件不动；符文宝石%s）", g_nst - ncube, ncube, g_sleft, g_snear ? "在储藏箱旁，进高级仓库" : "进百宝囊");
@@ -437,17 +437,19 @@ static void store_step(uint64_t pl, uint64_t fr) {
             g_sfr = fr; return; }
         if (!it) { if (s->to_vault) g_sv++; else if (g_snear) g_sg++; else g_sp++; g_ist++; g_sfr = 0; return; }
         if (fr - g_sfr > (!s->to_vault && g_snear ? 240 : 120)) {   // 储藏箱旁：服务端等 2 秒没进仓库才收回囊里，这边多等一会儿，别抢在它前面判「留在背包」 | next to the stash: the server waits 2 seconds and only takes it back into the pouch if it has not entered the stash, so wait a little longer here and do not judge "stays in the inventory" ahead of it
-            g_sleft++; LOG("【红】存放：物品 id %u 2 秒还在%s（%s不收）", s->id, s->page == 3 ? "魔盒" : "背包", s->to_vault ? "编年史" : g_snear ? "储藏箱" : "百宝囊"); g_ist++; g_sfr = 0; }
+            if (s->to_vault) g_sfull++; else g_sleft++; LOG("【红】存放：物品 id %u 2 秒还在%s（%s不收）%s", s->id, s->page == 3 ? "魔盒" : "背包", s->to_vault ? "编年史" : g_snear ? "储藏箱" : "百宝囊", s->to_vault ? "：背包不足，换不出旧件" : ""); g_ist++; g_sfr = 0; }
         return; }
     {   // 「存放：编年史 N 件，储藏箱 M 件，百宝囊 K 件」，为 0 的那类不写；一件没存也提示。「存放」「编年史」「储藏箱」是原版字符串（strGoldDeposit / Chronicle / 储藏箱标题） | 「存放：编年史 N 件，储藏箱 M 件，百宝囊 K 件」(Deposited: Chronicle N, Stash M, Pouch K); categories that are 0 are omitted; a notice is shown even if nothing was deposited. 「存放」(Deposit), 「编年史」(Chronicle) and 「储藏箱」(Stash) are original game strings (strGoldDeposit / Chronicle / the stash title)
         int k = snprintf(g_notice, sizeof g_notice, "%s", dm_str(B, "dmStoreHead")), any = 0;
         if (g_sv) { k += snprintf(g_notice + k, sizeof g_notice - k, dm_str(B, "dmStoreVault"), g_sv); any = 1; }
         if (g_sg) { k += snprintf(g_notice + k, sizeof g_notice - k, dm_str(B, "dmStoreStash"), any ? dm_str(B, "dmStoreSep") : "", g_sg); any = 1; }
         if (g_sp) { k += snprintf(g_notice + k, sizeof g_notice - k, dm_str(B, "dmStorePouch"), any ? dm_str(B, "dmStoreSep") : "", g_sp); any = 1; }
-        if (!any) k += snprintf(g_notice + k, sizeof g_notice - k, "%s", dm_str(B, "dmStoreNone"));
-        else if (g_sleft) snprintf(g_notice + k, sizeof g_notice - k, dm_str(B, "dmStoreLeft"), g_sleft); }
+        if (!any) { if (!g_sfull && !g_sworse) k += snprintf(g_notice + k, sizeof g_notice - k, "%s", dm_str(B, "dmStoreNone")); }
+        else if (g_sleft) k += snprintf(g_notice + k, sizeof g_notice - k, dm_str(B, "dmStoreLeft"), g_sleft);
+        if (g_sfull) k += snprintf(g_notice + k, sizeof g_notice - k, "%s背包不足，不能替换 %d 件", any ? dm_str(B, "dmStoreSep") : "", g_sfull);
+        if (g_sworse) k += snprintf(g_notice + k, sizeof g_notice - k, "%s不如编年史那件 %d 件", any ? dm_str(B, "dmStoreSep") : "", g_sworse); }
     int sv = g_sv + g_sg ? dm_request_save() : 0;   // 存放完请游戏存一次盘（同编年史存取）；进囊的由服务端拍自己请 | After depositing, ask the game to save once (same as chronicle store / retrieve); for items going into the pouch the server tick requests it itself
-    atomic_store(&g_notice_req, 1); LOG("存放：完成——编年史 %d、储藏箱 %d、百宝囊 %d、留在背包 %d → 提示「%s」；请存盘 → %d", g_sv, g_sg, g_sp, g_sleft, g_notice, sv); g_ist = -1;
+    atomic_store(&g_notice_req, 1); LOG("存放：完成——编年史 %d、储藏箱 %d、百宝囊 %d、留在背包 %d（其中背包不足 %d、不如旧件 %d）→ 提示「%s」；请存盘 → %d", g_sv, g_sg, g_sp, g_sleft, g_sfull, g_sworse, g_notice, sv); g_ist = -1;
 }
 
 // ---- 界面（只写我们自己的控件）
