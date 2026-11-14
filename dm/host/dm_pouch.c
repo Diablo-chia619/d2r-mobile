@@ -182,6 +182,9 @@ static int pouch_put(uint8_t *b, uint64_t G, uint64_t player, uint32_t id) {
 // Release to the inventory: build the last item in the pouch and put it in a free inventory spot; record one "release" entry. Returns 0 if the inventory has no room (called holding g_umu)
 static int pouch_take(uint8_t *b, uint64_t G, uint64_t player) {
     if (!g_nu || g_nup >= 256) return 0;
+    { int k = g_nu - 1; for (; k >= 0; k--) { uint32_t c0 = g_u[k].code & 0xffffffu; if (c0 != 0x737672u && c0 != 0x6c7672u) break; }   // 紫瓶不在这里放出（只走点图标）：否则一开仓库就被倒进背包，接着被「移到仓库」收走 | rejuv is never released here (only through its icon); otherwise opening the stash dumps it into the inventory and the stash sweep carries it away
+      if (k < 0) return 0;
+      if (k != g_nu - 1) { uitem t = g_u[k]; g_u[k] = g_u[g_nu - 1]; g_u[g_nu - 1] = t; } }
     uitem u = g_u[g_nu - 1]; uint64_t pp = *(uint64_t *)(player + 0x38), room = pp ? *(uint64_t *)(pp + 0x20) : 0; if (!room) return 0;
     uint64_t nu = dm_item_make(b, G, room, u.bits, u.len, NULL); if (!nu) { LOG("【红】百宝囊：%.3s 位流建不出物品，留在囊里", (const char *)&u.code); return 0; }
     uint64_t inv = *(uint64_t *)(player + 0x90); uint32_t cls = *(uint32_t *)(player + 4), fx = 0, fy = 0;   // 原版在格区找空位（同编年史取出） | The original game finds a free spot in the grid (same as chronicle retrieve)
@@ -554,7 +557,11 @@ void dm_pouch_srv_tick(uint8_t *b, uint64_t G, uint64_t player) {
     int saved = 0;
     pthread_mutex_lock(&g_umu);
     for (unsigned r = atomic_load(&g_absr); r != atomic_load(&g_absw); r++) { uint32_t id = atomic_load(&g_absq[r % 64]); atomic_store(&g_absr, r + 1);   // 收：储藏箱旁直接进高级仓库，别处进囊 | Stow: next to the stash it goes straight into the advanced stash, elsewhere into the pouch
-        if (go63) { move_to_stash(b, G, player, id, unit); if (nw < 64) wl[nw++] = (watch){ id, tq }; { uint64_t it3 = bag_item(player, id), d3 = it3 ? *(uint64_t *)(it3 + 0x10) : 0; if (it3 && d3) { uint32_t c3 = item_code(it3) & 0xffffffu; g_sentcode[g_nsent % 16] = c3; g_sentfr[g_nsent % 16] = tq; g_nsent++; } }
+        if (go63) { uint64_t it3 = bag_item(player, id), d3 = it3 ? *(uint64_t *)(it3 + 0x10) : 0;
+            if (it3 && is_rejuv(it3)) {   // 紫瓶：储藏箱旁也不进仓库，收进百宝囊（用户要求：紫瓶只攒在囊里） | rejuv: not into the stash even next to it, into the pouch instead
+                uint32_t c3 = item_code(it3) & 0xffffffu; int rp = pouch_put(b, G, player, id);
+                LOG("百宝囊：紫瓶 %.3s（id %u）在储藏箱旁 → 不进仓库，%s", (const char *)&c3, id, rp > 0 ? "收进百宝囊" : "留在背包（囊满或位流不对）"); continue; }
+            move_to_stash(b, G, player, id, unit); if (nw < 64) wl[nw++] = (watch){ id, tq }; { if (it3 && d3) { uint32_t c3 = item_code(it3) & 0xffffffu; g_sentcode[g_nsent % 16] = c3; g_sentfr[g_nsent % 16] = tq; g_nsent++; } }
             LOG("百宝囊：物品 id %u 在储藏箱旁 → 原版移到仓库（高级仓库单位 %u）", id, unit); }
         else if (!unit) LOG("百宝囊：物品 id %u —— 这个角色没有高级仓库，不收", id);
         else if (pouch_put(b, G, player, id) > 0) saved = 1; }
