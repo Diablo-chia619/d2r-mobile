@@ -31,6 +31,7 @@
 #include "dm_input.h"
 #include "dm_cursor_item.h"
 #include "dm_textbox_core.h"
+#include "dm_runeup.h"
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -147,6 +148,7 @@ static uint32_t shared_unit_id(uint8_t *b) {
 static uint64_t unit_any(uint8_t *b, uint32_t id, int type) { return ((uint64_t (*)(uint64_t, uint32_t, uint32_t, uint32_t))(b + 0x45f5f0))((uint64_t)(uintptr_t)(b + 0x2d603a0 + type * 0x400), id & 0x7f, id, (uint32_t)type); }
 static uint64_t first_item(uint64_t u) { uint64_t c = u ? *(uint64_t *)(u + 0x90) : 0; return c && *(uint32_t *)c == 0x01020304 ? *(uint64_t *)(c + 0x10) : 0; }
 static struct { uint32_t base; int n; cand_t c[NROW]; int open; } g_list;   // 打开着的清单 | The currently open list
+static int g_mk_row = -1, g_mk_col = -1;   // 点了哪一行哪一颗缺的符文（-1 = 没点）：这一行的按钮改成「合成」 | which row/column of a missing rune was tapped (-1 = none): that row's button becomes "craft"
 static int rune_lv(uint8_t *b, uint64_t t, int cls, int lvoff) { uint64_t ir = *(uint64_t *)(t + 0x15c0); uint32_t in = *(uint32_t *)(t + 0x15c8); return ir && cls >= 0 && (uint32_t)cls < in && lvoff >= 0 ? *(uint8_t *)(ir + (uint64_t)cls * 0x1c0 + lvoff) : 0; }
 static void rune_code(uint64_t t, int cls, char out[4]) { uint64_t ir = *(uint64_t *)(t + 0x15c0); uint32_t in = *(uint32_t *)(t + 0x15c8); memset(out, 0, 4); if (ir && cls >= 0 && (uint32_t)cls < in) memcpy(out, (const void *)(ir + (uint64_t)cls * 0x1c0 + 0x80), 3); }
 static int g_lvoff = -1;   // 物品表行里「需求等级」（levelreq）的偏移：首次用到时按已知物品的原版值在行里找（dm_rwlv_core.c），找不到就不显示等级 | offset of "required level" (levelreq) in an item-table row: found on first use by the original values of known items (dm_rwlv_core.c); when not found no level is shown
@@ -298,7 +300,7 @@ static void ui_layout(void) {
     place(W.title, RW_X, RW_Y0 + 14);
     y = top;
     for (int i = 0; i < NROW; i++) {
-        int vis = i >= W.first && i < W.last, ok = vis && g_list.c[i].ok;
+        int vis = i >= W.first && i < W.last, ok = vis && (g_list.c[i].ok || i == g_mk_row);
         place(W.name[i], vis ? RW_X + RW_PAD : OFF, vis ? y : OFF);
         place(W.lv[i], vis ? RW_X + RW_PAD + text_w(W.name[i]) + 28 : OFF, vis ? y + 4 : OFF);
         place(W.go[i], ok ? right + 12 - btn_w() : OFF, ok ? y + (W.rh[i] - RW_RGAP - btn_h()) / 2 : OFF);
@@ -421,7 +423,7 @@ static void ui_fill(uint8_t *b, uint64_t it) {
 }
 static int w_stale(void) { return W.panel && W.ui_gen != dm_ui_gen() && !dm_ui_gen_revalidate(&W.ui_gen, W.panel); }   // 缓存的是重建前的控件（代号变了、物品栏面板也不在树上了） | The cache holds widgets from before the rebuild (generation changed and the inventory panel is no longer in the tree)
 static void ui_show(uint8_t *b, int on) { if (on) { ui_cache(b); ui_layout(); } else { if (!W.panel) ui_cache(b); if (!w_stale()) ui_hide_all(); memset(&W, 0, sizeof W); } }   // 旧控件已释放：不碰，新建出来的清单控件缺省就在屏外 | Old widgets are freed: don't touch them; newly created list widgets are off screen by default
-static void list_close(uint8_t *b, const char *why) { if (!g_list.open) return; g_list.open = 0; ui_show(b, 0); LOG("符文之语：清单关闭（%s）", why); }
+static void list_close(uint8_t *b, const char *why) { if (!g_list.open) return; g_list.open = 0; g_mk_row = g_mk_col = -1; ui_show(b, 0); LOG("符文之语：清单关闭（%s）", why); }
 // 手柄 / 触屏切换（dm_padmode.c，游戏主线程，在让游戏重载布局之前调）：整套界面马上要销毁重建，W 里缓存的控件指针全部作废。
 // 清单开着的话这里直接当它关了——只清自己的状态，不碰控件（重建出来的清单控件缺省就在屏外）。不这样做，重建时游戏发的 ClosePanel 会走到 list_close → ui_show，
 // 经已销毁控件的虚表调用，崩（Mac 上 iOS 包实跑：触屏开着清单时推手柄摇杆，CRASH lr=list_close）
@@ -578,7 +580,7 @@ int dm_runeword_long_press(const dm_cursor_item_info *ci) {   // 长按物品分
     return 1;
 }
 void dm_runeword_list_close(void) { uint8_t *b = rb(); if (b) list_close(b, "点了清单外"); }
-int dm_runeword_list_open(void) { return g_list.open || g_job.st; }   // 合成进行中也答「开着」：交互层吃掉这期间所有点击，不让人半途关箱子 / 挪东西（一键合成的原子性） | Also answers "open" while crafting is in progress: the interaction layer swallows all taps during that time so nobody can close the stash / move things midway (atomicity of one-tap crafting)
+int dm_runeword_list_open(void) { return g_list.open || g_job.st || dm_runeup_busy(); }   // 合成进行中也答「开着」：交互层吃掉这期间所有点击，不让人半途关箱子 / 挪东西（原子性） | Also answers "open" while crafting is in progress: the interaction layer swallows all taps during that time so nobody can close the stash / move things midway
 // 清单按钮：「一键合成」TouchRwGo<行号>、翻页 TouchRwPgPrev / TouchRwPgNext。触摸下由交互层吃掉点击后直接调（dm_cursor.c ui_classify，不发鼠标点击，
 // 免得落到按钮底下的物品格上）；按钮自己的点击消息（PanelManager:ClosePanel:<名字>，鼠标 / 手柄确认键点到时游戏发）也走这里
 // List buttons: 「一键合成」(Craft) TouchRwGo<row number>, paging TouchRwPgPrev / TouchRwPgNext. Under touch, the interaction layer swallows the tap and calls directly (ui_classify in dm_cursor.c, no mouse click is sent,
@@ -590,7 +592,24 @@ void dm_runeword_button(const char *name) {
         if (!strncmp(name, "TouchRwBack", 11)) { LOG("符文之语：收起详情「%s」（点了 %s）", g_list.c[W.det].name, name); W.det = -1; ui_layout(); g_check_at = 6; }
         return; }
     if (!strncmp(name, "TouchRwName", 11) || !strncmp(name, "TouchRwLv", 9)) { det_open(b, atoi(name + (name[7] == 'N' ? 11 : 9))); return; }   // 点名字（连同后面的需要等级，手指好点中）= 看属性 | Tapping the name (together with the required level after it, easier for a finger to hit) = view stats
-    if (!strncmp(name, "TouchRwGo", 9)) { job_start(b, atoi(name + 9)); return; }
+    if (!strncmp(name, "TouchRwR", 8) && name[0] && name[strlen(name) - 1] == 'r') {   // 点了缺的那颗符文（红色那张图）：这一行出「合成」按钮 | Tapped a missing rune (the red image): that row shows the craft button
+        int row = -1, col = -1;
+        if (sscanf(name + 8, "%d_%d", &row, &col) == 2 && row >= 0 && row < g_list.n && col >= 0 && col < g_list.c[row].nr) {
+            int no = dm_runeup_rune_no(g_list.c[row].cls[col]); char why[160] = ""; int short_ = no ? dm_runeup_check(no, why, sizeof why) : 1;
+            if (!no) LOG("符文之语：点了第 %d 行第 %d 颗，但那一格不是符文", row + 1, col + 1);
+            else if (short_) LOG("符文之语：点缺的 %d 号（第 %d 行第 %d 颗）→ 料不够：%s", no, row + 1, col + 1, why);
+            else LOG("符文之语：点缺的 %d 号（第 %d 行第 %d 颗）→ 料够，这一行出「合成」按钮", no, row + 1, col + 1);
+            g_mk_row = (no && !short_) ? row : -1; g_mk_col = (no && !short_) ? col : -1;
+            ui_layout(); g_check_at = 4; }
+        return; }
+    if (!strncmp(name, "TouchRwGo", 9)) {
+        int row = atoi(name + 9);
+        if (row == g_mk_row && row >= 0) {   // 这一行的按钮是「合成」而不是「镶」 | this row's button means craft, not socket
+            int col = g_mk_col, no = (row < g_list.n && col >= 0 && col < g_list.c[row].nr) ? dm_runeup_rune_no(g_list.c[row].cls[col]) : 0;
+            char why[160] = ""; int r = no ? dm_runeup_start(no, why, sizeof why) : 1;
+            if (r) LOG("【红】符文之语：合成 %d 号没能开始（%s）", no, why);
+            g_mk_row = g_mk_col = -1; ui_layout(); return; }
+        job_start(b, row); return; }
     if (!strncmp(name, "TouchRwPg", 9)) {   // 到头不绕回，同仓库页 | No wrap-around at the ends, same as the stash pages
         int d = !strcmp(name + 9, "Next") ? 1 : -1, to = W.page + d;
         if (to >= 0 && to < W.pages) { W.page = to; ui_layout(); g_check_at = 6; }
@@ -657,6 +676,11 @@ void dm_runeword_pump(void) {   // 取手柄处每帧调（游戏主线程，dm_
     if (g_list.open) { uint64_t it = unit_item(b, g_list.base); if (!inv_panel(b) || !it || *(uint32_t *)(it + 0xc) > 1) list_close(b, "底材挪走了或面板没了"); }   // 先核面板与底材，再用缓存排版 | Check the panel and base item first, then use the cached layout
     if (g_list.open) { ui_layout(); if (g_check_at > 0 && --g_check_at == 0) ui_check(1); }
     job_pump(b);
+    { static int was; dm_runeup_pump();   // 符文升级（dm_runeup.c） | rune upgrading (dm_runeup.c)
+      if (was && !dm_runeup_busy() && g_list.open) { uint64_t it = unit_item(b, g_list.base);   // 合成收工：清单重算（缺的那颗可能已经有了） | crafting done: recompute the list (the missing rune may exist now)
+          if (it) { W.det = -1; g_mk_row = g_mk_col = -1; build_list(b, it); ui_layout(); g_check_at = 4;
+              LOG("符文之语：符文升级收工，清单重算成 %d 行", g_list.n); } }
+      was = dm_runeup_busy(); }
     pad_pump(b);
     // 测试开关 DM_TEST_RW_OPEN=<秒>:<物品码>[@inv|@stash|@shared]：进程起来后到这一秒（且物品栏开着）对第一件这个码、能开清单的物品按长按打开清单（不经触摸，宿主 / 真机脚本造现场用）。
     // @ 后缀只认放在那里的：inv = 背包，stash = 个人储藏箱，shared = 共享仓库（另外两个物品单位），equip = 穿在身上；不写 = 玩家自己的都算

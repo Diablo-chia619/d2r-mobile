@@ -773,7 +773,7 @@ static void cube_diag_req(uint64_t G, uint64_t player, const uint8_t *pkt, uint3
     // 包：[1..4] 魔盒 id、[5] 页、[6] 格、[7] = 原料数 − 1，之后每 5 字节一项 {物品 id, 格字节（低 4 位 x、高 4 位 y）}（0x6e8938–0x6e8b0c 按这些逐项核，对不上静默丢）
     // Packet: [1..4] cube id, [5] page, [6] cell, [7] = ingredient count − 1, then 5 bytes per entry {item id, cell byte (low 4 bits x, high 4 bits y)} (0x6e8938–0x6e8b0c checks these entry by entry and silently drops on mismatch)
     char hx[160]; int k = 0; uint32_t bid = 0; if (len >= 8) memcpy(&bid, pkt + 1, 4);
-    k += snprintf(hx + k, sizeof hx - k, "魔盒 id%u 原料 %d 项：", bid, len >= 8 ? pkt[7] + 1 : -1);
+    k += snprintf(hx + k, sizeof hx - k, "魔盒 id%u 页 %u 格 %u 原料 %d 项：", bid, len > 5 ? pkt[5] : 0, len > 6 ? pkt[6] : 0, len >= 8 ? pkt[7] + 1 : -1);
     for (uint32_t i = 8; i + 5 <= len && k < (int)sizeof hx - 24; i += 5) { uint32_t id; memcpy(&id, pkt + i, 4); k += snprintf(hx + k, sizeof hx - k, " id%u@%d,%d", id, pkt[i + 4] & 15, pkt[i + 4] >> 4); }
     LOG("合成读数：拍 %u 服务端收到合成请求（%s；长 %u）｜关卡 %d 难度 %u 版本字节 %u 玩家模式 %u｜光标物品 %#llx%s｜魔盒 %d 件：%s｜任务字 4=%#06x 26=%#06x 40=%#06x｜本局已开门字节 %s%#x",
         tq, hx, len, lv, diff, xp, pm, (unsigned long long)cur, cur ? "（非空：原版 0x6e8740 会丢掉这次合成）" : "（空）", n, items, w4, w26, w40, opened == 0xff ? "读不到 " : "", opened == 0xff ? 0 : opened);
