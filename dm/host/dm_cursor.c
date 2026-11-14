@@ -606,6 +606,14 @@ static dm_wref g_slot; static const char *g_slot_panel;   // 最近一次物品�
 static int item_walk(uint64_t w, uint64_t xy, int dep, char *hit, size_t hn) {
     if (!w || dep > 14) return 0;
     uint64_t nm = *(uint64_t *)(w + 8), ch = *(uint64_t *)(w + 0x58), n = *(uint64_t *)(w + 0x60);
+    if (nm && g_iw_base && *(uint64_t *)w - g_iw_base == 0x20892f8) {   // 成叠格：没有物品时游戏把格子设成不可见，但空格也要能点到（符文页空格合成） | stack cells: the game hides a cell with no item, but an empty cell must still be tappable (rune page empty-cell crafting)
+        int page_on = 0;
+        for (uint64_t q = *(uint64_t *)(w + 0x30); q; q = *(uint64_t *)(q + 0x30)) { const char *qn = *(uint64_t *)(q + 8) ? (const char *)*(uint64_t *)(q + 8) : "";   // 只认父容器可见的那些，免得命中别页叠在同一位置的格子 | only cells of a visible container count, so other pages' cells at the same spot are not hit
+            if (!strncmp(qn, "advancedstash_", 14)) { page_on = *(uint8_t *)(q + 0x50) != 0; break; } }
+        if (page_on) { uint64_t vt = *(uint64_t *)w, fn = *(uint64_t *)(vt + 0x48);
+            if (((int (*)(uint64_t, uint64_t))fn)(w, xy) & 1) { strlcpy(hit, (const char *)nm, hn); dm_wref_set(&g_slot, w);
+                { static char lastnm[8]; if (((const char *)nm)[0] == 'r' && strcmp(lastnm, (const char *)nm)) { strlcpy(lastnm, (const char *)nm, sizeof lastnm); LOG("高级仓库格命中：%s（可见 %d）", (const char *)nm, *(uint8_t *)(w + 0x50) != 0); } }
+                return 1; } } }
     if (!*(uint8_t *)(w + 0x50)) return 0;
     if (dep == 1 && nm && !strncmp((const char *)nm, "HUD", 3)) return 0;   // HUD 各层（底栏那个 Belt 等）属于游戏画面：面板开着时不是物品区（设置页点「应用」被判成「物品区 Belt」，光标推摇杆改了别的设置） | The HUD layers (the Belt in the bottom bar, etc.) belong to the game picture: while a panel is open they are not an item area (tapping 「应用」(Apply) on the settings page was classified as 「物品区 Belt」(item area Belt), and the cursor pushing the stick changed another setting)
     // 高级仓库（宝石 / 材料 / 符文页）的成叠格：每格一个控件，名字是物品码（r01、gcw…），认虚表 main+0x20892f8（控件树转储）；它们的容器 advancedstash_* 自己没有矩形、命不中
@@ -1577,7 +1585,13 @@ static void ui_item_pump(uint64_t root, int width, int height) {
     if (r != 1 && r != 7 && dm_item_targeting()) { dm_item_target_cancel(); LOG("界面鉴定：点在物品区之外，退出鉴定态"); }
     if (r == 1) dm_wref_set(&g_down, dm_wref_get(&g_slot));   // 这次按下落在哪个物品区控件上（「拿起」那下算物品原位用） | Which item-area widget this press landed on (used to compute the item's original position on the "pick up" press)
     { dm_hud_info hh; dm_hud_get(&hh); if (r == 0 && hh.valid && hh.holding && g_inside_owner[0] && !in_item_panel_rect(main_module(), root, (uint64_t)(uint32_t)x | ((uint64_t)(uint32_t)y << 32))) r = 3; }   // 手上还拿着物品时点两侧黑网格：按面板外算（手势层 = 丢） | Tapping the black grid on either side while still holding an item: treated as outside the panel (gesture layer = drop)
-    if (r == 1 && dm_wref_get(&g_slot) && g_iw_base && *(uint64_t *)dm_wref_get(&g_slot) - g_iw_base == 0x20892f8) { r = 8; atomic_store(&g_exact_xy, (uint64_t)(uint32_t)x | (uint64_t)(uint32_t)y << 32); atomic_store(&g_stack_left, -1); atomic_store(&g_stack_want, 1); }   // 8 = 高级仓库里的成叠格（手势层照物品区处理，只有双击不同：取 1 件，不按住 Y——按住是原版的「移动 3 个」） | 8 = a stack cell in the advanced stash (the gesture layer handles it like the item area, only the double tap differs: take 1, without holding Y - holding is the original game's 「移动 3 个」(Move 3))
+    if (r == 1 && dm_wref_get(&g_slot) && g_iw_base && *(uint64_t *)dm_wref_get(&g_slot) - g_iw_base == 0x20892f8) {
+        const char *wn = *(uint64_t *)(dm_wref_get(&g_slot) + 8) ? (const char *)*(uint64_t *)(dm_wref_get(&g_slot) + 8) : "";
+        int no = 0;   // 控件名就是物品码：rNN → 符文号 | the widget name is the item code: rNN -> rune number
+        if (wn[0] == 'r' && wn[1] >= '0' && wn[1] <= '9' && wn[2] >= '0' && wn[2] <= '9') no = (wn[1] - '0') * 10 + (wn[2] - '0');
+        int dm_runeup_empty(int), dm_runeup_tap_empty(int);
+        if (no > 0 && dm_runeup_empty(no) && dm_runeup_tap_empty(no)) { r = 0; snprintf(hit, hn, "符文页空格 %d 号（点两下合成）", no); }   // 空格：吃掉点击，不当作物品区（否则手势层会去「拿」一件不存在的东西） | empty cell: swallow the tap, do not treat it as the item area (the gesture layer would try to pick up something that is not there)
+        else { r = 8; atomic_store(&g_exact_xy, (uint64_t)(uint32_t)x | (uint64_t)(uint32_t)y << 32); atomic_store(&g_stack_left, -1); atomic_store(&g_stack_want, 1); } }   // 8 = 高级仓库里的成叠格（手势层照物品区处理，只有双击不同：取 1 件，不按住 Y——按住是原版的「移动 3 个」） | 8 = a stack cell in the advanced stash (the gesture layer handles it like the item area, only the double tap differs: take 1, without holding Y - holding is the original game's 「移动 3 个」(Move 3))
     g_press_stack = r == 8;
     if (r == 1 && imbue_locked(main_module(), root)) r = 10;   // 10 = 单件任务槽里有东西时，背包 / 身上的别的物品：手势层照物品区，但不拿起、双击不动（原版此时这些物品上不出「放置 / 丢弃」提示） | 10 = other items in the inventory / on the body while the single-item quest slot holds something: the gesture layer treats it like the item area, but no pick-up and double tap does nothing (the original game shows no 「放置 / 丢弃」(Place / Drop) hint on these items at this time)
     if (r == 1 && g_slot_panel && !strcmp(g_slot_panel, "VendorPanelLayout") && dm_shop_open()) r = 7;   // 7 = 商人货架上的货（手势层照物品区处理，只有起拖不同：拖到背包 = 买） | 7 = an item on the vendor shelf (the gesture layer handles it like the item area, only the drag start differs: dragging to the inventory = buy)

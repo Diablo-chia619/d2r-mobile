@@ -297,3 +297,30 @@ int dm_runeup_start(int rune_no, char *why, int cap) {
     LOG("符文升级：开始补 %d 号（第一轮造 %d 号，要 %d 颗 %d 号%s，魔盒 id%u）", rune_no, first, g_up.want_rune, RCP[first].from, g_up.want_gem ? " + 宝石" : "", cid);
     return 0;
 }
+
+
+// ---------- 符文页空格：点一下记下、点第二下开始合成 ----------
+// Rune page empty cell: first tap arms it, the second tap starts crafting
+static int g_tap_no;
+int dm_runeup_empty(int rune_no) {   // 这一号在手上/囊里/仓库一颗都没有（=符文页那格是空的） | no rune of this number anywhere reachable (= that page cell is empty)
+    uint8_t *b = rb(); if (!b || rune_no < 1 || rune_no > 33) return 0;
+    uint64_t pl = player(b); if (!pl) return 0;
+    build_cls_cache(b, up_tables(b, pl));
+    inv_t v; scan_inv(b, pl, &v);
+    return v.rune[rune_no] == 0;
+}
+int dm_runeup_tap_empty(int rune_no) {   // 返回 1 = 这一下吃掉（第一次提示 / 开始合成 / 正在跑） | 1 = swallow this tap
+    uint8_t *b = rb(); if (!b) return 0;
+    if (g_up.st) { LOG("符文升级：合成还在跑，这次点击不动"); return 1; }
+    char rn[64] = ""; uint64_t pl = player(b), t = pl ? up_tables(b, pl) : 0;
+    rune_name(b, t, rune_no, rn, sizeof rn);
+    if (g_tap_no != rune_no) {
+        g_tap_no = rune_no;
+        LOG("符文升级：点了空格 %d 号（%s）→ 记下，再点一次就开始合成", rune_no, rn);
+        return 1; }
+    g_tap_no = 0;
+    char why[200] = "";
+    int r = dm_runeup_start(rune_no, why, sizeof why);
+    LOG("%s符文升级：点空格 %d 号（%s）→ %s", r ? "【红】" : "", rune_no, rn, r ? why : "开始合成");
+    return 1;
+}

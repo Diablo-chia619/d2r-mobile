@@ -24,5 +24,7 @@ int dm_runeup_start(int rune_no, char *why, int cap);
 void dm_runeup_pump(void);   // 游戏主线程每帧 | game main thread, every frame
 int dm_runeup_busy(void);    // 还在跑吗 | still running?
 int dm_runeup_rune_no(int cls);   // 物品类号 → 符文号（1..33，不是符文返回 0） | item class id -> rune number (1..33, 0 when not a rune)
+int dm_runeup_empty(int rune_no);   // 这一号一颗都没有（符文页那格是空的） | no rune of this number anywhere
+int dm_runeup_tap_empty(int rune_no);   // 符文页空格被点了：第一下记下、第二下开始合成；返回 1 = 吃掉这次点击 | empty rune-page cell tapped
 
 #endif
