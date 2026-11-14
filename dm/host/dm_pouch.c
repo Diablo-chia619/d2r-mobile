@@ -558,9 +558,7 @@ void dm_pouch_srv_tick(uint8_t *b, uint64_t G, uint64_t player) {
     pthread_mutex_lock(&g_umu);
     for (unsigned r = atomic_load(&g_absr); r != atomic_load(&g_absw); r++) { uint32_t id = atomic_load(&g_absq[r % 64]); atomic_store(&g_absr, r + 1);   // 收：储藏箱旁直接进高级仓库，别处进囊 | Stow: next to the stash it goes straight into the advanced stash, elsewhere into the pouch
         if (go63) { uint64_t it3 = bag_item(player, id), d3 = it3 ? *(uint64_t *)(it3 + 0x10) : 0;
-            if (it3 && is_rejuv(it3)) {   // 紫瓶：储藏箱旁也不进仓库，收进百宝囊（用户要求：紫瓶只攒在囊里） | rejuv: not into the stash even next to it, into the pouch instead
-                uint32_t c3 = item_code(it3) & 0xffffffu; int rp = pouch_put(b, G, player, id);
-                LOG("百宝囊：紫瓶 %.3s（id %u）在储藏箱旁 → 不进仓库，%s", (const char *)&c3, id, rp > 0 ? "收进百宝囊" : "留在背包（囊满或位流不对）"); continue; }
+            if (it3 && is_rejuv(it3)) { uint32_t c3 = item_code(it3) & 0xffffffu; LOG("百宝囊：紫瓶 %.3s（id %u）在储藏箱旁 → 不进仓库（留在背包，收进囊由主线程那条路做）", (const char *)&c3, id); continue; }   // 紫瓶：不进仓库。收进囊走主线程 dm_pouch_pump 那条稳的 | rejuv: never into the stash; stowing it goes through the main-thread path
             move_to_stash(b, G, player, id, unit); if (nw < 64) wl[nw++] = (watch){ id, tq }; { if (it3 && d3) { uint32_t c3 = item_code(it3) & 0xffffffu; g_sentcode[g_nsent % 16] = c3; g_sentfr[g_nsent % 16] = tq; g_nsent++; } }
             LOG("百宝囊：物品 id %u 在储藏箱旁 → 原版移到仓库（高级仓库单位 %u）", id, unit); }
         else if (!unit) LOG("百宝囊：物品 id %u —— 这个角色没有高级仓库，不收", id);
