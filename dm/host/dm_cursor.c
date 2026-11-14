@@ -1589,8 +1589,7 @@ static void ui_item_pump(uint64_t root, int width, int height) {
         const char *wn = *(uint64_t *)(dm_wref_get(&g_slot) + 8) ? (const char *)*(uint64_t *)(dm_wref_get(&g_slot) + 8) : "";
         int no = 0;   // 控件名就是物品码：rNN → 符文号 | the widget name is the item code: rNN -> rune number
         if (wn[0] == 'r' && wn[1] >= '0' && wn[1] <= '9' && wn[2] >= '0' && wn[2] <= '9') no = (wn[1] - '0') * 10 + (wn[2] - '0');
-        int dm_runeup_empty(int), dm_runeup_tap_empty(int);
-        if (no > 0 && dm_runeup_empty(no) && dm_runeup_tap_empty(no)) { r = 0; snprintf(hit, sizeof hit, "符文页空格 %d 号（点两下合成）", no); }   // 空格：吃掉点击，不当作物品区（否则手势层会去「拿」一件不存在的东西） | empty cell: swallow the tap, do not treat it as the item area (the gesture layer would try to pick up something that is not there)
+        if (0) { r = 0; }   // 点空格合成分支已拆（用户改用按钮） | the empty-cell crafting branch is gone (a button replaces it)
         else { r = 8; atomic_store(&g_exact_xy, (uint64_t)(uint32_t)x | (uint64_t)(uint32_t)y << 32); atomic_store(&g_stack_left, -1); atomic_store(&g_stack_want, 1); } }   // 8 = 高级仓库里的成叠格（手势层照物品区处理，只有双击不同：取 1 件，不按住 Y——按住是原版的「移动 3 个」） | 8 = a stack cell in the advanced stash (the gesture layer handles it like the item area, only the double tap differs: take 1, without holding Y - holding is the original game's 「移动 3 个」(Move 3))
     g_press_stack = r == 8;
     if (r == 1 && imbue_locked(main_module(), root)) r = 10;   // 10 = 单件任务槽里有东西时，背包 / 身上的别的物品：手势层照物品区，但不拿起、双击不动（原版此时这些物品上不出「放置 / 丢弃」提示） | 10 = other items in the inventory / on the body while the single-item quest slot holds something: the gesture layer treats it like the item area, but no pick-up and double tap does nothing (the original game shows no 「放置 / 丢弃」(Place / Drop) hint on these items at this time)
