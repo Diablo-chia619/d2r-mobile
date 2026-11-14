@@ -369,15 +369,24 @@ int dm_runeup_list(int *no_out, int *cnt_out, int max) {
     uint64_t pl = player(b); if (!pl) return 0;
     build_cls_cache(b, up_tables(b, pl));
     inv_t v; scan_inv(b, pl, &v);
-    int gem[40]; for (int k = 0; k < g_cls_gem_n && k < 40; k++) gem[k] = v.gem[k];
     int n = 0;
     for (int no = 2; no <= 33 && n < max; no++) {
-        int need = RCP[no].n, from = RCP[no].from, cnt = v.rune[from] / need;
-        if (RCP[no].gem[0]) { int gi = gem_idx(RCP[no].gem); if (gi >= 0 && gem[gi] < cnt) cnt = gem[gi]; }
-        if (cnt <= 0) continue;
-        v.rune[from] -= cnt * need; v.rune[no] += cnt;
-        if (RCP[no].gem[0]) { int gi = gem_idx(RCP[no].gem); if (gi >= 0) gem[gi] -= cnt; }
+        // 把「合出 1 颗 no」整条链展开成每一层各需要几颗，再按库存取最小倍数 = 最多能合几颗。
+        // 这和 dm_runeup_start 里 make_plan 的判定天然一致（>=1 就是能合），不会再出现「列表说能合、点下去说没料」。
+        // Expand "make one rune of number no" into how many of each layer it needs, then take the smallest stock/need ratio = how many can be made.
+        // This matches make_plan in dm_runeup_start by construction (>=1 means craftable), so the list can no longer promise something the craft refuses.
+        int need[34]; memset(need, 0, sizeof need); need[no] = 1;
+        for (int i = no; i >= 2; i--) { if (!RCP[i].from) break; need[i - 1] += need[i] * RCP[i].n; }
+        if (!RCP[no].from) continue;
+        int cnt = 9999, any = 0;
+        for (int i = 1; i <= no; i++) { if (!need[i]) continue; any = 1; int q = v.rune[i] / need[i]; if (q < cnt) cnt = q; }
+        if (!any) continue;
+        if (RCP[no].gem[0]) { int gi = gem_idx(RCP[no].gem); if (gi < 0) continue; if (v.gem[gi] < cnt) cnt = v.gem[gi]; }   // 宝石不够就不列（和 make_plan 一样） | nothing listed when the gems fall short (same as make_plan)
+        if (cnt < 1) continue;
         no_out[n] = no; cnt_out[n] = cnt; n++;
+        // 不模拟消耗：每号各按现有库存独立算，弹框每次打开重算（点一次合一颗，合完再开数字就变了）
+        // No simulated consumption: each number is judged against the current stock and recomputed每次打开，so the numbers are never stale
+        // （这样列表说「能合 N」时，至少第一颗一定合得出来——和 make_plan 同一套判断）
     }
     return n;
 }

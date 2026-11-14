@@ -486,9 +486,9 @@ static void rc_show(uint64_t root, int on) {
     for (int i = 0; i < n; i++) { char nm[24], line[64];
         snprintf(nm, sizeof nm, "TouchRcText%d", i); snprintf(line, sizeof line, "%d# ×%d", nos[i], cnts[i]); w_text(find_w(root, nm, 1), line);
         snprintf(nm, sizeof nm, "TouchRcRow%d", i);
-        w_move(find_w(root, nm, 1), 936, 470 + i * 56); }
-    for (int i = 0; i < n; i++) { char nm[24]; snprintf(nm, sizeof nm, "TouchRcText%d", i); w_move(find_w(root, nm, 1), 604, 470 + i * 56); }
-    w_move(bg, 572, 380); w_move(title, 604, 396); w_move(close, 1040, 396);
+        w_move(find_w(root, nm, 1), 1148, 470 + i * 56); }
+    for (int i = 0; i < n; i++) { char nm[24]; snprintf(nm, sizeof nm, "TouchRcText%d", i); w_move(find_w(root, nm, 1), 792, 470 + i * 56); }
+    w_move(bg, 760, 380); w_move(title, 792, 396);
     g_rc = 1; LOG("符文合成：弹框开了，%d 行", n);
 }
 static int g_rc_init;
