@@ -57,6 +57,8 @@ static uint64_t tables(uint8_t *b, uint64_t it) { uint8_t v = *(uint8_t *)(it + 
 static void send_pkt(uint8_t *b, const uint8_t *p, int n) { ((void (*)(const uint8_t *, int))(b + 0x2ceab0))(p, n); }
 static int grid_xy(uint64_t it, int *x, int *y) { uint64_t pp = *(uint64_t *)(it + 0x38); if (!pp) return 0; *x = *(int32_t *)(pp + 0x10); *y = *(int32_t *)(pp + 0x14); return 1; }
 static uint32_t item_code(uint8_t *b, uint64_t it) { return ((uint32_t (*)(uint64_t))(b + 0x570260))(it); }
+static uint64_t rune_unit_item(uint8_t *b, uint32_t id) {   // 按 id 取物品指针（和 dm_runeword.c 的 unit_item 同一套原版调用） | look an item up by id (same original-game call as dm_runeword.c's unit_item)
+    return ((uint64_t (*)(uint64_t, uint32_t, uint32_t, uint32_t))(b + 0x45f5f0))((uint64_t)(uintptr_t)(b + 0x2d603a0 + 4 * 0x400), id & 0x7f, id, 4); }
 static uint64_t held_item(uint64_t pl) {   // 光标上那件（物品栏 +0x40，模式 4） | the item on the cursor (inventory +0x40, mode 4)
     uint64_t inv = pl ? *(uint64_t *)(pl + 0x90) : 0, h = inv && *(uint32_t *)inv == 0x01020304 ? *(uint64_t *)(inv + 0x40) : 0;
     return h && *(uint32_t *)h == 4 ? h : 0;
@@ -132,7 +134,16 @@ static int make_plan(uint8_t *b, uint64_t t, int to, plan_t *p) {
     if (to < 1 || to > 33) return 1;
     inv_t have; scan_inv(b, player(b), &have);
     int need[34]; memset(need, 0, sizeof need); need[to] = 1;
-    for (int i = to; i >= 2; i--) {
+    // 目标号「无条件造一颗」：不扣它自己的现货。语义是「消耗下层料换一颗新的」，
+    // 而不是「缺了才补」——否则仓库里躺着同号符文时，点下去会被判成「材料不够」。
+    // The target number is always crafted once, ignoring stock of that same rune: the intent is
+    // "spend the lower runes to make a new one", not "top up a shortage" -- otherwise having one in
+    // the stash made the click fail with "not enough materials".
+    if (!RCP[to].from) { p->short_rune = to; p->short_cnt = 1; return 1; }
+    p->craft[to] = 1;
+    need[to - 1] += RCP[to].n;
+    if (RCP[to].gem[0]) { int gi = gem_idx(RCP[to].gem); if (gi >= 0) p->need_gem[gi] += 1; }
+    for (int i = to - 1; i >= 2; i--) {
         int d = need[i] - have.rune[i]; if (d < 0) d = 0;
         p->craft[i] = d;
         if (!d) continue;
@@ -142,6 +153,13 @@ static int make_plan(uint8_t *b, uint64_t t, int to, plan_t *p) {
     }
     if (need[1] > have.rune[1]) { p->short_rune = 1; p->short_cnt = need[1] - have.rune[1]; }
     for (int k = 0; k < g_cls_gem_n; k++) if (p->need_gem[k] > have.gem[k]) { p->short_gem = k; p->short_cnt = p->need_gem[k] - have.gem[k]; }
+    if (p->short_rune >= 0) LOG("符文升级：造 %d 号失败 → 缺 %d 号 ×%d（现货 %d）；各层 need/have：%d/%d %d/%d %d/%d %d/%d",
+        to, p->short_rune, p->short_cnt, p->short_rune >= 1 && p->short_rune <= 33 ? have.rune[p->short_rune] : -1,
+        need[to], have.rune[to], to > 1 ? need[to-1] : 0, to > 1 ? have.rune[to-1] : 0,
+        to > 2 ? need[to-2] : 0, to > 2 ? have.rune[to-2] : 0, to > 3 ? need[to-3] : 0, to > 3 ? have.rune[to-3] : 0);
+    if (p->short_gem >= 0) LOG("符文升级：造 %d 号失败 → 缺宝石 %s ×%d（现货 %d）", to,
+        p->short_gem < g_cls_gem_n ? g_gem_code[p->short_gem] : "?", p->short_cnt,
+        p->short_gem < 40 ? have.gem[p->short_gem] : -1);
     return (p->short_rune >= 0 || p->short_gem >= 0) ? 1 : 0;
 }
 
@@ -208,6 +226,11 @@ static void up_fail(const char *why) {
 void dm_runeup_pump(void) {
     if (!g_up.st) return;
     uint8_t *b = rb(); if (!b) { g_up.st = 0; return; }
+    // 面板被关掉就立刻中止，不再碰物品链表 —— 2.3.0 起点空白处就能关面板，
+    // 合成途中面板一关，后面的 find_cube / 物品指针全成了野指针，直接崩进程。
+    // Abort as soon as the panel is gone instead of touching the item list: since 2.3.0 a tap on empty
+    // space closes the panel, and carrying on with find_cube / item pointers then reads freed memory.
+    if (!*(uint8_t *)(b + 0x2d5ff60)) { up_fail("面板关了，合成中止"); return; }
     uint64_t pl = player(b); if (!pl) { up_fail("没有玩家"); return; }
     uint64_t cube_it = find_cube(b, pl, &g_up.cube); if (!cube_it) { up_fail("魔盒不在身上"); return; }
     build_cls_cache(b, tables(b, cube_it));
@@ -216,11 +239,17 @@ void dm_runeup_pump(void) {
     int cls_gem = gi >= 0 ? g_cls_gem[gi] : 0;
 
     if (g_up.st == 2) {   // 等光标拿到 → 放进魔盒 | wait for the cursor, then put it into the cube
+        // 成叠取件（0x39d724）落的是背包，不是光标；光标没有就按 id 去背包里找。
+        // 之前只等光标，于是「3 颗都到了背包但一颗也放不进魔盒」，最后报拿料超时。
+        // A stacked pickup (0x39d724) lands in the bag, not on the cursor, so fall back to a lookup by id.
         uint64_t h = held_item(pl);
-        if (!h) { if (++g_up.wait > 60) up_fail("拿料超时"); return; }
-        if (*(uint32_t *)(h + 8) != g_up.pid) { g_up.st = 1; return; }
+        if (!h || *(uint32_t *)(h + 8) != g_up.pid) {
+            h = rune_unit_item(b, g_up.pid);
+            if (h && (*(uint32_t *)(h + 0xc) != 0 || *(uint32_t *)(h + 8) != g_up.pid)) h = 0;
+        }
+        if (!h) { if (++g_up.wait > 120) up_fail("拿料超时"); return; }
         typedef int (*putfn)(uint64_t, uint64_t, int, int, int, void *);
-        int out = 0; int r = ((putfn)(b + 0x3bdb10))(h, pl, PG_CUBE, 0xff, 0, &out) & 1;
+        uint64_t out[4] = {0, 0, 0, 0}; int r = ((putfn)(b + 0x3bdb10))(h, pl, PG_CUBE, 0xff, 0, out) & 1;
         LOG("符文升级：%u 放进魔盒 → %s", g_up.pid, r ? "已放" : "放不下");
         if (!r) { up_fail("魔盒放不下"); return; }
         g_up.st = 1; g_up.wait = 0; return;
@@ -232,7 +261,17 @@ void dm_runeup_pump(void) {
             int cls = have_r < g_up.want_rune ? cls_from : cls_gem;
             int kind = 0, page = 0, x = 0, y = 0; uint32_t id = 0;
             if (!pick_material(b, pl, cls, &kind, &page, &x, &y, &id)) { up_fail("库存里挑不到料了"); return; }
-            if (kind == 2) { LOG("【红】符文升级：料在高级仓库成叠（造 %d 号要 %d 号），这一版还没接成叠取件", g_up.m, RCP[g_up.m].from); up_fail("成叠来源未支持"); return; }
+            // kind 2 = 高级仓库里的成叠符文：走同一条 0x19 取件包，服务端会从叠里拆一颗出来。
+            // 之前这里直接报「成叠来源未支持」，而玩家的小号符文几乎都在成叠里，所以永远合不动。
+            // kind 2 = a stacked rune in the advanced stash: use the same 0x19 pickup packet; the server takes one off the stack.
+            // It used to bail out with "stacked source unsupported", and since small runes almost always sit in stacks, crafting never worked.
+            if (kind == 2) {   // 成叠：原版「取 1 件到光标」，随后 st==2 会把它放进魔盒 | stacked: original "take 1 to the cursor"; the st==2 step then drops it into the cube
+                uint64_t r = rune_unit_item(b, id);
+                if (!r) { LOG("【红】符文升级：成叠里找不到 id %u", id); up_fail("成叠里找不到那件"); return; }
+                static uint64_t fake[0x620 / 8]; memset(fake, 0, sizeof fake); fake[0x608 / 8] = r;
+                ((void (*)(void *))(b + 0x39d724))(fake);
+                LOG("符文升级：成叠取 1 件到光标（%d 号 id %u）", RCP[g_up.m].from, id);
+                g_up.pid = id; g_up.st = 2; g_up.wait = 0; return; }
             uint8_t p[17]; memset(p, 0, sizeof p); p[0] = 0x19;
             uint32_t v[4] = { id, (uint32_t)x, (uint32_t)y, (uint32_t)page }; memcpy(p + 1, v, 16); send_pkt(b, p, 17);
             g_up.pid = id;
@@ -291,6 +330,7 @@ int dm_runeup_check(int rune_no, char *why, int cap) {
 
 int dm_runeup_start(int rune_no, char *why, int cap) {
     uint8_t *b = rb(); if (!b) return 1; uint64_t pl = player(b); if (!pl) return 1;
+    LOG("符文升级：v4-force-craft 进入 start（%d 号）", rune_no);   // 标记：确认手机跑的是这一版 | marker to confirm the phone really runs this build
     uint32_t cid = 0; uint64_t cube = find_cube(b, pl, &cid); if (!cube) { if (why) snprintf(why, cap, "%s", dm_ui("dmRwNoCube")); return 1; }
     build_cls_cache(b, tables(b, cube));
     if (cube_others(b, pl)) { if (why) snprintf(why, cap, "%s", dm_ui("dmRwCubeBusy")); return 1; }
@@ -373,27 +413,26 @@ int dm_runeup_list(int *no_out, int *cnt_out, int max) {
     int n = 0;
     for (int no = 2; no <= 33 && n < max; no++) {
         if (!RCP[no].from) continue;
-        // 逐层算「缺口」：某一层现货够就不往下要（和 make_plan 一模一样），所以手上已有的 19# 会抵掉 18# 的需求。
-        // Layer-by-layer deficit: if a layer's stock covers it, nothing is demanded from below (exactly what make_plan does),
-        // so runes already in hand at the top of the chain offset the demand for the lower ones.
+        // 和 make_plan 完全同一套：目标号无条件造一颗（不吃它自己的现货），下层逐层算缺口。
+        // 需求按「一颗」展开，各层现货 / 需求取最小值 = 最多能合几颗。
+        // Exactly the same shape as make_plan: the target is always crafted once (its own stock is not spent);
+        // lower layers only demand the deficit. Requirement expanded for one rune; min of stock/requirement = how many fit.
         int need[34]; memset(need, 0, sizeof need); need[no] = 1;
-        for (int i = no; i >= 2; i--) {
-            if (!need[i] || !RCP[i].from) continue;
-            int def = need[i] - v.rune[i]; if (def < 0) def = 0;
-            if (def) need[i - 1] += def * RCP[i].n;
-        }
-        // 能合几颗 = 各层「现货 / 这层总需求」的最小值。目标号自己那层跳过——它本来就是合出来的，
-        // 手上 0 颗不代表合不了（这正是之前 2#/20# 被判「合不了」的原因）。
-        // How many can be crafted = min over layers of stock/requirement. The target number itself is skipped:
-        // it is what gets crafted, so having zero in hand does not mean it is impossible (that was the earlier bug).
-        int cnt = 9999, ok = 0;
-        for (int i = 1; i <= no; i++) {
+        need[no - 1] += RCP[no].n;
+        if (RCP[no].gem[0]) { int gi = gem_idx(RCP[no].gem); if (gi < 0 || v.gem[gi] < 1) continue; }
+        int bad = 0;
+        for (int i = no - 1; i >= 2; i--) {
             if (!need[i]) continue;
-            if (RCP[i].gem[0]) { int gi = gem_idx(RCP[i].gem); if (gi < 0 || v.gem[gi] < 1) { cnt = 0; break; } }
-            if (i == no) continue;
-            ok = 1; int q = v.rune[i] / need[i]; if (q < cnt) cnt = q;
+            int def = need[i] - v.rune[i]; if (def < 0) def = 0;
+            if (!def) continue;
+            if (!RCP[i].from) { bad = 1; break; }   // 这一层补不出来（已经是底层符文且现货不够） | cannot be produced at all
+            need[i - 1] += def * RCP[i].n;
+            if (RCP[i].gem[0]) { int gi = gem_idx(RCP[i].gem); if (gi < 0 || v.gem[gi] < 1) { bad = 1; break; } }
         }
-        if (cnt == 9999) cnt = 1;   // 只有目标号那层有需求（下层现货够）→ 至少 1 颗 | only the target layer had demand -> at least 1
+        if (bad) continue;
+        int cnt = 9999;
+        for (int i = 1; i < no; i++) { if (!need[i]) continue; int q = v.rune[i] / need[i]; if (q < cnt) cnt = q; }
+        // 宝石：一颗这颗要的那颗宝石必须有（中间层的宝石已在上面的循环里挡掉了）
         if (cnt < 1) continue;
         no_out[n] = no; cnt_out[n] = cnt; n++;
     }

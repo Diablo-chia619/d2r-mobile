@@ -494,7 +494,13 @@ static void rc_show(uint64_t root, int on) {
 }
 static int g_rc_init;
 static void rc_pump(uint64_t root) {   // 没开时每帧把弹框挪走（布局里给的是绝对坐标，会默认显示） | keep the popup off screen while closed
-    if (g_rc) return; if (!root) return; rc_show(root, 0); g_rc_init = 1; (void)g_rc_init; }
+    if (g_rc) return;
+    // 面板关掉后控件树已释放，再 find_w / w_move 就是野指针 —— 「关掉仓库后一操作就崩」的原因。
+    // Once the panel is closed its widget tree is freed; walking it would read a wild pointer.
+    if (!root || root < 0x10000) return;
+    uint64_t vt = *(uint64_t *)root;
+    if (!vt || vt < 0x10000 || vt > 0x7fff00000000ULL) return;
+    rc_show(root, 0); g_rc_init = 1; (void)g_rc_init; }
 static void tip_show(uint64_t root, int on) {
     uint64_t tb = find_w(root, "TouchPouchTip", 1), bg = find_w(root, "TouchPouchTipBg", 1), box = find_w(root, "TouchPouch", 1); if (!tb || !bg || !box) return;
     if (!on) { w_move(tb, 99999, 0); w_move(bg, 99999, 0); g_tip = 0; return; }
