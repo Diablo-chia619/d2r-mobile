@@ -66,6 +66,7 @@ SRC=\
 	dm_rift.c \
 	dm_rift_ui.c \
 	dm_runeword.c \
+	dm_runeup.c \
 	dm_rwlv_core.c \
 	dm_shoprefresh.c \
 	dm_textbox.c \

@@ -773,7 +773,7 @@ static void cube_diag_req(uint64_t G, uint64_t player, const uint8_t *pkt, uint3
     // 包：[1..4] 魔盒 id、[5] 页、[6] 格、[7] = 原料数 − 1，之后每 5 字节一项 {物品 id, 格字节（低 4 位 x、高 4 位 y）}（0x6e8938–0x6e8b0c 按这些逐项核，对不上静默丢）
     // Packet: [1..4] cube id, [5] page, [6] cell, [7] = ingredient count − 1, then 5 bytes per entry {item id, cell byte (low 4 bits x, high 4 bits y)} (0x6e8938–0x6e8b0c checks these entry by entry and silently drops on mismatch)
     char hx[160]; int k = 0; uint32_t bid = 0; if (len >= 8) memcpy(&bid, pkt + 1, 4);
-    k += snprintf(hx + k, sizeof hx - k, "魔盒 id%u 原料 %d 项：", bid, len >= 8 ? pkt[7] + 1 : -1);
+    k += snprintf(hx + k, sizeof hx - k, "魔盒 id%u 页 %u 格 %u 原料 %d 项：", bid, len > 5 ? pkt[5] : 0, len > 6 ? pkt[6] : 0, len >= 8 ? pkt[7] + 1 : -1);
     for (uint32_t i = 8; i + 5 <= len && k < (int)sizeof hx - 24; i += 5) { uint32_t id; memcpy(&id, pkt + i, 4); k += snprintf(hx + k, sizeof hx - k, " id%u@%d,%d", id, pkt[i + 4] & 15, pkt[i + 4] >> 4); }
     LOG("合成读数：拍 %u 服务端收到合成请求（%s；长 %u）｜关卡 %d 难度 %u 版本字节 %u 玩家模式 %u｜光标物品 %#llx%s｜魔盒 %d 件：%s｜任务字 4=%#06x 26=%#06x 40=%#06x｜本局已开门字节 %s%#x",
         tq, hx, len, lv, diff, xp, pm, (unsigned long long)cur, cur ? "（非空：原版 0x6e8740 会丢掉这次合成）" : "（空）", n, items, w4, w26, w40, opened == 0xff ? "读不到 " : "", opened == 0xff ? 0 : opened);
@@ -805,6 +805,27 @@ static uint32_t local_player_id(void) { uint32_t slot = 8, lid = 0xffffffffu; mo
 // This version does one thing only: read it once every 15 ticks and write a line when the count changed.
 // The previous version kept a 6 KB snapshot array on the host stack; the host thread stack is small and both CRASHes landed in host code
 // with a garbage addr, so a smashed stack is the prime suspect. Nothing big lives on the stack here; all buffers are static.
+static int ammo_ok(uint64_t u) {   // 单位地址是否可信：地址够高、8 字节对齐、数据块指针也有效 | Whether a unit address is trustworthy: high enough, 8-byte aligned, and its data block pointer valid
+    uint64_t d = 0;
+    if (u < 0x100000 || (u & 7)) return 0;
+    if (!tk_rd(u + 0x10, &d, 8) || d < 0x100000 || (d & 7)) return 0;
+    return 1;
+}
+
+static void ammo_probe(uint64_t pl, uint64_t inv) {
+    static int on = -1, prev = -1; static uint32_t last = 0;
+    if (on < 0) on = getenv("DM_DEBUG_AMMO") != NULL;
+    if (!on) return;
+    uint32_t now = cur_tick(); if (last && now - last < 15) return; last = now;   // 15 拍 ≈ 0.6 秒 | 15 ticks ~ 0.6 s
+    module_t *mm = main_mod(); if (!mm) return;
+    uint64_t pages = 0, eq = 0, q = 0;
+    if (!tk_rd(inv + 0x20, &pages, 8) || !pages) return;
+    if (!tk_rd(pages + 0x18, &eq, 8) || !eq) return;
+    if (!tk_rd(eq + 8 * 5, &q, 8) || !q || !ammo_ok(q)) return;   // 装备格 5 = 箭袋 | equipment cell 5 = quiver
+    int n = ((int (*)(uint64_t, int, int))(mm->base + 0x5b9290))(q, 70, 0);   // stat 70 = quantity
+    if (n != prev) { LOG("[ammo] 箭袋（装备格5）数量 %d → %d", prev, n); prev = n; }
+}
+
 static void hud_tick(uint64_t G) {        // 每拍：受控玩家等级 / 本级经验‰ / 腰带四列件数 / 回城次数 + 当前人数档 → g_hud（前端 dm_hud_get） | Every tick: controlled player's level / current-level experience ‰ / item counts of the four belt columns / town portal count + current /players setting → g_hud (front end dm_hud_get)
     dm_hud_info h = {0};
     uint64_t player = 0, inv = 0, u = 0, next = 0;
@@ -845,6 +866,7 @@ static void hud_tick(uint64_t G) {        // 每拍：受控玩家等级 / 本�
         // 卡死就是这样——服务端还挂着放进仓库的魔盒，原先拿服务端这一份当「手上有东西」，拖放收尾链一遍遍按返回关面板
         // Held item: this is the server-side player, for diagnostics only; h.holding takes the client's true value via dm_hud_get (dm_hud.c). If the two sides stay inconsistent (server cursor still holding, client hand empty), log a red line:
         // that is exactly the hang: the server still held the Horadric Cube that had been put into the stash, the old code took the server copy as "something in hand", and the drag-and-drop wrap-up chain kept pressing Back to close panels
+        ammo_probe(player, inv);
         { uint64_t cur = 0; tk_rd(inv + 0x40, &cur, 8);
           static uint64_t lcur; if (cur != lcur) { uint32_t id = 0; if (cur) tk_rd(cur + 8, &id, 4); LOG("手上物品（服务端）：%s（物品 id %u）", cur ? "拿着" : "空了", id); lcur = cur; }   // 每次变化记一行：「看不见的手上物品」排查用 | Logs one line on every change: for investigating the "invisible held item"
           static uint64_t mcur; static int mn; if (cur && !dm_hud_held()) { if (++mn == 50 && cur != mcur) { uint32_t id = 0; tk_rd(cur + 8, &id, 4); mcur = cur; LOG("【红】手上物品：服务端光标挂着物品（id %u）、客户端手上已空 2 秒——两端不一致，按客户端（手上空）处理", id); } } else mn = 0; }   // 非零 = 拿着；值随物品不同（dm_cursor 的「放不下往里挪」靠它认出换成了别的物品）   // 物品栏 +0x40 = 光标上拿着的物品（同 DM_STATE 的 cursor） | Nonzero = holding; the value differs per item (dm_cursor's "can't place, shift inward" relies on it to detect that the item was swapped for another)   // Inventory +0x40 = item held on the cursor (same as DM_STATE's cursor)
@@ -1413,15 +1435,6 @@ static int potpick_gate(const uint64_t *regs) {
     uint32_t mode = 0, slot = 0; if (!u || !tk_rd(u + 0xC, &mode, 4) || mode != 3 || !tk_rd(p + 0x90, &inv, 8) || !inv) return 0;
     uint32_t code = ((uint32_t (*)(uint64_t))(m->base + 0x570260))(u);
     if (((int (*)(uint64_t, uint64_t, uint32_t *, int))(m->base + 0x561de0))(inv, u, &slot, 1)) { static int ok; if (ok++ < 40) LOG("药水自动拾取：物品 %u（%.4s）到服务端时腰带放得进（槽 %u），放行", id, (const char *)&code, slot); return 0; }
-    {   // 紫瓶例外：腰带放不下、但背包放得下 → 放行（进了背包由百宝囊（dm_pouch.c）收走，最终进材料页）；背包也满才照旧丢包
-        // Rejuvenation exception: the belt is full but the inventory has room -> let it through (dm_pouch.c picks it up from the inventory and it ends in the materials page); only drop it when the inventory is full too
-        uint32_t c3 = code & 0xffffffu;
-        if (c3 == 0x737672u || c3 == 0x6c7672u) {
-            uint32_t cls = 0, fx = 0, fy = 0;
-            if (tk_rd(p + 4, &cls, 4) && cls <= 7 &&
-                ((int (*)(uint64_t, uint64_t, int, uint32_t *, uint32_t *, int))(m->base + 0x55f620))(inv, u, *(int32_t *)(m->base + 0x1dae684 + cls * 8 + 4), &fx, &fy, 0)) {
-                static int ok2; if (ok2++ < 40) LOG("药水自动拾取：物品 %u（%.4s）腰带满、背包放得下（格 %u,%u）→ 放行，交给百宝囊收", id, (const char *)&code, fx, fy);
-                return 0; } } }
     static int dr; if (dr++ < 40) LOG("药水自动拾取：物品 %u（%.4s）到服务端时腰带已放不下 → 不捡，留在地上（丢包第 %d 次）", id, (const char *)&code, dr);
     return 1;
 }
