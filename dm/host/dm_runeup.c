@@ -37,6 +37,8 @@
 #include "dm_cursor.h"
 #include "dm_i18n.h"
 #include "dm_runeup.h"
+#include <stdarg.h>
+#include "../host/front.h"
 
 #define PAGE(d) (*(uint8_t *)((d) + 0x55))
 enum { PG_INV = 0, PG_CUBE = 3, PG_STASH = 4 };
@@ -75,6 +77,68 @@ static uint64_t held_item(uint64_t pl) {   // 光标上那件（物品栏 +0x40�
 // 故意不用 signal / backtrace：渲染线程里注册 signal 会让游戏直接崩（吃过一次）。
 // Safe diagnostics: write the step number to a file after each step. Read it after a crash to see where it stopped.
 // Deliberately no signal / backtrace: registering a signal handler on the render thread kills the game.
+// 模拟点一下某个控件：取矩形中心 → 归一化 → dm_touch_set 落一根手指（下一帧抬起）
+// Simulate a tap on a widget: take the rect centre, normalise it, drop a finger via dm_touch_set (lifted next frame)
+static void tw_trace(const char *fmt, ...) {   // 追加写文件（LOG 会被缓冲吞掉） | append to a file (LOG gets swallowed by buffering)
+    FILE *f = fopen("/data/user/0/com.xiaoboluo.d2r.own/files/dm/runeup_widgets.txt", "a"); if (!f) return;
+    va_list ap; va_start(ap, fmt); vfprintf(f, fmt, ap); va_end(ap); fputc('\n', f); fclose(f);
+}
+static int tap_widget_center(uint8_t *b, uint64_t root, const char *name) {
+    tw_trace("== tap %s：root=%#llx", name, (unsigned long long)root);
+    // 完整递归（convert 藏在 BankExpansionLayout 深处，两层扫不到）
+    // Full recursion: convert sits deep inside BankExpansionLayout, a two-level scan misses it.
+    uint64_t stack[1024]; int sp = 0; stack[sp++] = root;
+    uint64_t w = 0;
+    while (sp > 0 && !w) {
+        uint64_t cur = stack[--sp]; if (!cur) continue;
+        const char *nm = (const char *)*(uint64_t *)(cur + 8);
+        if (nm && !strcmp(nm, name)) { w = cur; break; }
+        uint64_t ch = *(uint64_t *)(cur + 0x58), n = *(uint64_t *)(cur + 0x60);
+        if (!ch || n > 256) continue;
+        for (uint64_t i = 0; i < n && sp < 1024; i++) { uint64_t c = *(uint64_t *)(ch + 8 * i); if (c) stack[sp++] = c; }
+    }
+    if (!w) { tw_trace("遍历完没找到 %s（栈上限 1024）", name);
+        // 找不到：把全部可见控件名写进文件（LOG 会被 stderr 缓冲吞掉，写文件可靠）
+        FILE *f = fopen("/data/user/0/com.xiaoboluo.d2r.own/files/dm/runeup_widgets.txt", "w");
+        if (f) {
+            int cnt = 0; sp = 0; stack[sp++] = root;
+            while (sp > 0) { uint64_t cur = stack[--sp]; if (!cur) continue;
+                const char *nm2 = (const char *)*(uint64_t *)(cur + 8);
+                if (nm2 && *nm2) { fprintf(f, "%s\n", nm2); cnt++; }
+                uint64_t ch2 = *(uint64_t *)(cur + 0x58), n2 = *(uint64_t *)(cur + 0x60);
+                if (!ch2 || n2 > 256) continue;
+                for (uint64_t i2 = 0; i2 < n2 && sp < 1024; i2++) { uint64_t c2 = *(uint64_t *)(ch2 + 8 * i2); if (c2) stack[sp++] = c2; } }
+            fprintf(f, "--- 共 %d 个控件，找的是 %s\n", cnt, name); fclose(f);
+        }
+        return 0; }
+    // 普通控件：位置在 +0x38 指的矩形里；这个「reshape/convert」按钮没有那个指针，
+    // 矩形是内联在控件自身的 +0x70（x 低 32 位、y 高 32 位）和 +0x78（宽、高）里。
+    // Ordinary widgets keep their rect behind the pointer at +0x38; this convert button has no such pointer --
+    // its rect is inline: +0x70 (x in the low 32 bits, y in the high) and +0x78 (width, height).
+    int x, y, ww, hh;
+    tw_trace("找到控件 w=%#llx，+0x70=%#llx +0x78=%#llx +0x38=%#llx", (unsigned long long)w,
+             (unsigned long long)*(uint64_t *)(w + 0x70), (unsigned long long)*(uint64_t *)(w + 0x78), (unsigned long long)*(uint64_t *)(w + 0x38));
+    uint64_t pp = *(uint64_t *)(w + 0x38);
+    if (pp) { x = *(int32_t *)(pp + 0x10); y = *(int32_t *)(pp + 0x14); ww = *(int32_t *)(pp + 0x18); hh = *(int32_t *)(pp + 0x1c); }
+    else { uint64_t xy = *(uint64_t *)(w + 0x70), wh = *(uint64_t *)(w + 0x78);
+           x = (int32_t)(xy & 0xffffffffu); y = (int32_t)(xy >> 32);
+           ww = (int32_t)(wh & 0xffffffffu); hh = (int32_t)(wh >> 32); }
+    if (ww <= 0 || hh <= 0 || ww > 4096 || hh > 4096) { tw_trace("rect 无效 x=%d y=%d w=%d h=%d pp=%#llx", x, y, ww, hh, (unsigned long long)pp); return 0; }
+    int cx = x + ww / 2, cy = y + hh / 2;
+    // 控件 rect 用的是「面板基准坐标系」1764x1486（不是屏幕像素）。实测：按钮 @589,882 + 116x116，
+    // 画面是 1976x900；拿 940/900 会算出 1.04 出界，按 1486 算才是 0.633。
+    // Widget rects live in the layout's own 1764x1486 space, not screen pixels: the same button reads
+    // 589,882 with a 1976x900 framebuffer, and 940/900 overflows while 940/1486 lands correctly.
+    int sw = 1764, sh = 1486; (void)b;
+    float fx = (float)cx / (float)sw, fy = (float)cy / (float)sh;
+    if (fx < 0 || fx >= 1 || fy < 0 || fy >= 1) {
+        tw_trace("超界：中心 (%d,%d) / 画面 %dx%d → %.4f,%.4f（控件 %dx%d @%d,%d）", cx, cy, sw, sh, (double)fx, (double)fy, ww, hh, x, y);
+        return 0; }
+    dm_touch t = { 0, fx, fy };
+    dm_touch_set(&t, 1);
+    tw_trace("点中：%dx%d @%d,%d → 归一化 %.4f,%.4f（画面 %dx%d）", ww, hh, x, y, (double)fx, (double)fy, sw, sh);
+    return 1;
+}
 static void dump_pkt(const uint8_t *pk, int n) {   // 把要发的包写进文件（崩溃也不丢） | write the outgoing packet to a file so a crash cannot swallow it
     FILE *f = fopen("/data/user/0/com.xiaoboluo.d2r.own/files/dm/runeup_pkt.txt", "w"); if (!f) return;
     for (int i = 0; i < n; i++) fprintf(f, "%02x ", pk[i]);
@@ -320,32 +384,21 @@ void dm_runeup_pump(void) {
         }
         // 料齐 → 发 0x20 | materials complete -> send 0x20
         step_note(4121);
-        int total = g_up.want_rune + (gi >= 0 ? 1 : 0);
-        if (total < 1) total = 1; if (total > 16) total = 16;
-        uint8_t p[8 + 5 * 16]; memset(p, 0, sizeof p);   // 原来只有 8+5*4=28 字节，多一项就爆栈 | was 8+5*4=28 bytes; one item more blew the stack
-        uint32_t cid = g_up.cube; memcpy(p + 1, &cid, 4);
-        // 真机实测：手动合一次，服务端收到的包是「页 0 格 0」，不是「页 3」。
-        // 我原来按 PG_CUBE=3 填，服务端拿页 3 去解析魔盒内容就越界崩溃（客户端和服务端同进程，一起死）。
-        // Measured on the real game (a manual transmute): the server receives page 0 / cell 0, not page 3.
-        // Filling PG_CUBE=3 made the server parse the cube contents as page 3 and crash the shared process.
-        p[0] = 0x20;   // 包类型必须自己填！memset 之后忘了设，服务端收到类型 0 的包直接崩
-        p[5] = 0; p[6] = 0; p[7] = (uint8_t)(total - 1);
-        int n = 0; uint64_t q = first_item(pl);
-        for (int c = 0; q && c < 400 && n < total; c++) { uint64_t d = *(uint64_t *)(q + 0x10); if (!d) break;
-            if (PAGE(d) == PG_CUBE) { int cl = (int)*(uint32_t *)(q + 4);
-                if (cl == cls_from || (gi >= 0 && cl == cls_gem)) { int x = 0, y = 0; grid_xy(q, &x, &y);
-                    uint32_t iid = *(uint32_t *)(q + 8); memcpy(p + 8 + 5 * n, &iid, 4); p[8 + 5 * n + 4] = (uint8_t)((x & 15) | ((y & 15) << 4)); n++; } }
-            q = *(uint64_t *)(d + 0xb0); }
-        step_note(4122);
-        if (n < total) { up_fail("魔盒里的料数不对"); return; }
-        dump_pkt(p, 8 + 5 * n);
-        send_pkt(b, p, 8 + 5 * n);
-        { char hx[220] = ""; int k = 0; for (int i2 = 0; i2 < 8 + 5 * n && k < 190; i2++) k += snprintf(hx + k, sizeof hx - k, "%02x ", p[i2]);
-          fprintf(stderr, "[dm] 符文升级：我发的 0x20（%d 字节）：%s\n", 8 + 5 * n, hx); fflush(stderr); }
-        step_note(4123);
-        LOG("符文升级：发合成 0x20（魔盒 id%u，%d 项，包长 %d，页 %u 格 %u）→ 等结果", g_up.cube, n, 8 + 5 * n, p[5], p[6]);
-        g_up.st = 5; g_up.wait = 0; return;
+        // 料齐 → 不自己拼 0x20，改成模拟点游戏自己的「重塑」按钮（convert）。
+        // 自己拼的包能到服务端（合成读数有记录），但服务端从不执行配方；点按钮走的是原版完整流程。
+        // Materials ready -> do not hand-roll 0x20; simulate a tap on the game's own Transmute button (convert) instead.
+        // Our hand-built packet reaches the server (the readout logs it) but the recipe is never applied; the button goes through the original flow.
+        if (!dm_ui_tap_widget("convert")) { up_fail("找不到重塑按钮"); return; }
+        g_up.st = 6; g_up.wait = 0; return;
     }
+
+    if (g_up.st == 6) { step_note(46);   // 悬停之后一帧再按下 | press one frame after hovering
+        dm_ui_tap_widget_press();
+        g_up.st = 7; g_up.wait = 0; return; }
+
+    if (g_up.st == 7) { step_note(47);   // 再一帧抬起，游戏才认一次完整点击 | release a frame later so the game sees one full click
+        dm_ui_tap_widget_end();
+        g_up.st = 5; g_up.wait = 0; return; }
 
     if (g_up.st == 5) { step_note(45);   // 等结果：产物出现 = 成了 | wait: the product showing up means it worked
         if (++g_up.wait > 200) { up_fail("发合成后 3 秒魔盒没变"); return; }

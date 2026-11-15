@@ -1,5 +1,6 @@
 #include "dm_elysium.h"
 #include "dm_cursor.h"
+#include <stdarg.h>
 #include "dm_custom.h"
 #include "dm.h"
 #include "dm_uiscreen.h"
@@ -3404,4 +3405,99 @@ void dm_ui_cache_mode_leave(void) {
     atomic_store(&g_wtap, 0); atomic_store(&g_buy_at, 0); atomic_store(&g_tap_req, 0); atomic_store(&g_use_req, 0); atomic_store(&g_long_req, 0); atomic_store(&g_ident_req, 0);
     atomic_store(&g_dg_kind, 0); atomic_store(&g_bd_state, 0); atomic_store(&g_swaptab_tap, 0); atomic_store(&g_mercpg, 0);
     atomic_store(&g_up_hold, 0); atomic_store(&g_up_r, atomic_load(&g_up_w));
+}
+
+// ---------- 给别的模块用：模拟点一下某个控件（走 ui_send_mouse，游戏认的就是这条） ----------
+// ---------- For other modules: simulate a tap on a widget (through ui_send_mouse, the path the game honours) ----------
+static int g_tap_x = -1, g_tap_y = -1;
+static int g_tap_stage = 0;   // 0 无, 1 已悬停待按下, 2 已按下待抬起 | 0 idle, 1 hovered, 2 pressed
+static void tap_log(const char *fmt, ...) {
+    FILE *f = fopen("/data/user/0/com.xiaoboluo.d2r.own/files/dm/runeup_widgets.txt", "a"); if (!f) return;
+    va_list ap; va_start(ap, fmt); vfprintf(f, fmt, ap); va_end(ap); fputc('\n', f); fclose(f);
+}
+// 第一步：把光标挪到控件上（悬停），按钮进入 hover 之后才会对按下有反应
+// Step 1: move the cursor onto the widget (hover); the button only reacts to a press once it is hovered.
+int dm_ui_tap_widget(const char *name) {
+    module_t *m = main_module(); uint64_t root = 0;
+    if (!m || !name) { tap_log("tap：m/name 空"); return 0; }
+    memcpy(&root, m->base + 0x2f05458, 8); if (!root) { tap_log("tap：root 空"); return 0; }
+    // 同名控件可能有多个（面板上有两个 convert：魔盒那个在上、物品栏那个在下），
+    // 挑最靠上的那个——魔盒在面板上部，item 栏的按钮在底部。
+    // Several widgets can share the name (this panel has two "convert": the cube one sits higher than the inventory one).
+    // Pick the topmost -- the cube is in the upper part of the panel, the inventory bar is at the bottom.
+    uint64_t w = 0; int w_best_y = 0;
+    { uint64_t st[1024]; int sp = 0; st[sp++] = root;
+      while (sp > 0) { uint64_t cur = st[--sp]; if (!cur) continue;
+        const char *nm = (const char *)*(uint64_t *)(cur + 8);
+        if (nm && !strcmp(nm, name)) {
+            int ay; uint64_t ap = *(uint64_t *)(cur + 0x38);
+            if (ap) ay = *(int32_t *)(ap + 0x14);
+            else { uint64_t xy2 = *(uint64_t *)(cur + 0x70); ay = (int32_t)(uint32_t)(xy2 >> 32); }
+            if (!w || ay < w_best_y) { w = cur; w_best_y = ay; } }
+        uint64_t ch = *(uint64_t *)(cur + 0x58), n = *(uint64_t *)(cur + 0x60);
+        if (!ch || n > 256) continue;
+        for (uint64_t i = 0; i < n && sp < 1024; i++) { uint64_t cc = *(uint64_t *)(ch + 8 * i); if (cc) st[sp++] = cc; } } }
+    if (!w) { tap_log("tap：找不到 %s", name); return 0; }
+    {   // 把树上所有同名控件的矩形都列出来（可能有多个 convert）
+        tap_log("--- 所有 %s：", name);
+        uint64_t st[1024]; int sp = 0; st[sp++] = root; int cnt = 0;
+        while (sp > 0) { uint64_t cur = st[--sp]; if (!cur) continue;
+            const char *nm = (const char *)*(uint64_t *)(cur + 8);
+            if (nm && !strcmp(nm, name)) {
+                int ax, ay, aw, ah;
+                uint64_t ap = *(uint64_t *)(cur + 0x38);
+                if (ap) { ax = *(int32_t *)(ap + 0x10); ay = *(int32_t *)(ap + 0x14); aw = *(int32_t *)(ap + 0x18); ah = *(int32_t *)(ap + 0x1c); }
+                else { uint64_t xy2 = *(uint64_t *)(cur + 0x70), wh2 = *(uint64_t *)(cur + 0x78);
+                       ax = (int32_t)(uint32_t)xy2; ay = (int32_t)(uint32_t)(xy2 >> 32);
+                       aw = (int32_t)(uint32_t)wh2; ah = (int32_t)(uint32_t)(wh2 >> 32); }
+                tap_log("  #%d %#llx  %dx%d @%d,%d  vis=%d", cnt, (unsigned long long)cur, aw, ah, ax, ay, (int)(*(uint8_t *)(cur + 0x50) & 1));
+                cnt++; }
+            uint64_t ch = *(uint64_t *)(cur + 0x58), n = *(uint64_t *)(cur + 0x60);
+            if (!ch || n > 256) continue;
+            for (uint64_t i = 0; i < n && sp < 1024; i++) { uint64_t cc = *(uint64_t *)(ch + 8 * i); if (cc) st[sp++] = cc; } }
+        tap_log("--- 共 %d 个", cnt);
+    }
+    int x, y, ww, hh;
+    uint64_t pp = *(uint64_t *)(w + 0x38);
+    if (pp) { x = *(int32_t *)(pp + 0x10); y = *(int32_t *)(pp + 0x14); ww = *(int32_t *)(pp + 0x18); hh = *(int32_t *)(pp + 0x1c); }
+    else { uint64_t xy = *(uint64_t *)(w + 0x70), wh = *(uint64_t *)(w + 0x78);
+           x = (int32_t)(uint32_t)xy; y = (int32_t)(uint32_t)(xy >> 32);
+           ww = (int32_t)(uint32_t)wh; hh = (int32_t)(uint32_t)(wh >> 32); }
+    if (ww <= 0 || hh <= 0 || ww > 4096 || hh > 4096) { tap_log("tap：%s 矩形无效 %dx%d @%d,%d", name, ww, hh, x, y); return 0; }
+    int W = *(int32_t *)(m->base + 0x211da38), H = *(int32_t *)(m->base + 0x211da3c);
+    if (W <= 0 || H <= 0) { tap_log("tap：画面尺寸无效 %dx%d", W, H); return 0; }
+    g_tap_x = (int)((double)(x + ww / 2) / 1764.0 * (double)W);
+    g_tap_y = (int)((double)(y + hh / 2) / 1486.0 * (double)H);
+    tap_log("tap %s：%dx%d @%d,%d → 屏幕 (%d,%d) / 画面 %dx%d", name, ww, hh, x, y, g_tap_x, g_tap_y, W, H);
+    // 让游戏自己把坐标吸附到最近的可点控件（真实点击前做的就是这一步），顺便验证命中的是不是目标
+    // Let the game snap the point onto the nearest clickable widget (exactly what a real tap does) and report what it lands on.
+    { int sx = g_tap_x, sy = g_tap_y;
+      int sn = ui_snap(m, root, &sx, &sy);
+      tap_log("snap=%d → (%d,%d) 命中 %s", sn, sx, sy, g_click_name ? g_click_name : "(空)");
+      if (sn == 0) { tap_log("snap：周围没有可点控件"); return 0; }
+      g_tap_x = sx; g_tap_y = sy; }
+    ui_send_mouse(m, root, ui_hash("MouseMove"), g_tap_x, g_tap_y);
+    g_tap_stage = 1;
+    return 1;
+}
+// 第二步：按下
+// Step 2: press.
+int dm_ui_tap_widget_press(void) {
+    if (g_tap_stage != 1) return 0;
+    module_t *m = main_module(); uint64_t root = 0;
+    if (!m) return 0;
+    memcpy(&root, m->base + 0x2f05458, 8); if (!root) return 0;
+    ui_send_mouse(m, root, ui_hash("LeftMouseButtonDown"), g_tap_x, g_tap_y);
+    tap_log("tap：按下 (%d,%d)", g_tap_x, g_tap_y);
+    g_tap_stage = 2;
+    return 1;
+}
+// 第三步：抬起
+// Step 3: release.
+void dm_ui_tap_widget_end(void) {
+    if (g_tap_stage != 2 || g_tap_x < 0) return;
+    module_t *m = main_module(); uint64_t root = 0;
+    if (m) memcpy(&root, m->base + 0x2f05458, 8);
+    if (m && root) { ui_send_mouse(m, root, ui_hash("LeftMouseButtonUp"), g_tap_x, g_tap_y); tap_log("tap：抬起 (%d,%d)", g_tap_x, g_tap_y); }
+    g_tap_x = g_tap_y = -1; g_tap_stage = 0;
 }
