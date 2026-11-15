@@ -59,11 +59,34 @@ static int grid_xy(uint64_t it, int *x, int *y) { uint64_t pp = *(uint64_t *)(it
 static uint32_t item_code(uint8_t *b, uint64_t it) { return ((uint32_t (*)(uint64_t))(b + 0x570260))(it); }
 static uint64_t rune_unit_item(uint8_t *b, uint32_t id) {   // 按 id 取物品指针（和 dm_runeword.c 的 unit_item 同一套原版调用） | look an item up by id (same original-game call as dm_runeword.c's unit_item)
     return ((uint64_t (*)(uint64_t, uint32_t, uint32_t, uint32_t))(b + 0x45f5f0))((uint64_t)(uintptr_t)(b + 0x2d603a0 + 4 * 0x400), id & 0x7f, id, 4); }
+static uint64_t bag_item_of_cls(uint8_t *b, uint64_t pl, int cls) {   // 背包里按类号找一件 | find one item of this class in the bag
+    uint64_t inv = pl ? *(uint64_t *)(pl + 0x90) : 0;
+    for (uint64_t it = inv && *(uint32_t *)inv == 0x01020304 ? *(uint64_t *)(inv + 0x10) : 0; it; ) {
+        uint64_t d = *(uint64_t *)(it + 0x10); if (!d) break;
+        if (*(uint32_t *)(it + 0xc) == 0 && PAGE(d) == PG_INV && (int)*(uint32_t *)(it + 4) == cls) return it;
+        it = *(uint64_t *)(d + 0xb0); }
+    (void)b; return 0;
+}
 static uint64_t held_item(uint64_t pl) {   // 光标上那件（物品栏 +0x40，模式 4） | the item on the cursor (inventory +0x40, mode 4)
     uint64_t inv = pl ? *(uint64_t *)(pl + 0x90) : 0, h = inv && *(uint32_t *)inv == 0x01020304 ? *(uint64_t *)(inv + 0x40) : 0;
     return h && *(uint32_t *)h == 4 ? h : 0;
 }
-void dm_pouch_notice(const char *text);   // 宿主提示通道（dm_pouch.c） | host notice channel (dm_pouch.c)
+// 安全诊断：每走一步把步骤号写进文件。崩溃之后读这个文件就知道停在哪。
+// 故意不用 signal / backtrace：渲染线程里注册 signal 会让游戏直接崩（吃过一次）。
+// Safe diagnostics: write the step number to a file after each step. Read it after a crash to see where it stopped.
+// Deliberately no signal / backtrace: registering a signal handler on the render thread kills the game.
+static void dump_pkt(const uint8_t *pk, int n) {   // 把要发的包写进文件（崩溃也不丢） | write the outgoing packet to a file so a crash cannot swallow it
+    FILE *f = fopen("/data/user/0/com.xiaoboluo.d2r.own/files/dm/runeup_pkt.txt", "w"); if (!f) return;
+    for (int i = 0; i < n; i++) fprintf(f, "%02x ", pk[i]);
+    fprintf(f, "\n长 %d\n", n); fclose(f);
+}
+static void step_note(int n) {
+    const char *p = "/data/user/0/com.xiaoboluo.d2r.own/files/dm/runeup_step.txt";
+    FILE *f = fopen(p, "w"); if (!f) return;
+    fprintf(f, "%d\n", n); fclose(f);
+}
+void dm_pouch_notice(const char *text);
+static void log_flush(void) { fflush(stderr); }   // 宿主提示通道（dm_pouch.c） | host notice channel (dm_pouch.c)
 static void rune_name(uint8_t *b, uint64_t t, int no, char *out, size_t n);   // 定义在文件末尾，这里先声明 | defined at the end of the file
 static const char *loc_key(uint8_t *b, const char *code) { struct { const char *p; uint64_t k; } q = { code, 3 }; const char *s = ((const char *(*)(void *))(b + 0x7f5630))(&q); return s && *s ? s : code; }
 
@@ -129,10 +152,14 @@ static void scan_inv(uint8_t *b, uint64_t pl, inv_t *v) {   // 只算现在拿�
 // ---------- 计划 ----------
 typedef struct { int craft[34]; int need_gem[40]; int short_rune, short_cnt, short_gem; } plan_t;
 static int make_plan(uint8_t *b, uint64_t t, int to, plan_t *p) {
+    step_note(33);
     memset(p, 0, sizeof *p); p->short_rune = -1; p->short_gem = -1;
     build_cls_cache(b, t);   // 必须先建符文类号缓存，否则 scan_inv 数出来全是 0 → 任何合成都报「缺料」 | must build the rune class cache first, otherwise scan_inv counts zero and every craft claims it lacks materials
     if (to < 1 || to > 33) return 1;
-    inv_t have; scan_inv(b, player(b), &have);
+    step_note(34);
+    uint64_t pl2 = player(b); step_note(35);
+    inv_t have; scan_inv(b, pl2, &have);
+    step_note(36);
     int need[34]; memset(need, 0, sizeof need); need[to] = 1;
     // 目标号「无条件造一颗」：不扣它自己的现货。语义是「消耗下层料换一颗新的」，
     // 而不是「缺了才补」——否则仓库里躺着同号符文时，点下去会被判成「材料不够」。
@@ -151,8 +178,11 @@ static int make_plan(uint8_t *b, uint64_t t, int to, plan_t *p) {
         need[i - 1] += d * RCP[i].n;
         if (RCP[i].gem[0]) { int gi = gem_idx(RCP[i].gem); if (gi >= 0) p->need_gem[gi] += d; }
     }
+    step_note(37);
     if (need[1] > have.rune[1]) { p->short_rune = 1; p->short_cnt = need[1] - have.rune[1]; }
-    for (int k = 0; k < g_cls_gem_n; k++) if (p->need_gem[k] > have.gem[k]) { p->short_gem = k; p->short_cnt = p->need_gem[k] - have.gem[k]; }
+    step_note(38);
+    for (int k = 0; k < g_cls_gem_n && k < 40; k++) if (p->need_gem[k] > have.gem[k]) { p->short_gem = k; p->short_cnt = p->need_gem[k] - have.gem[k]; }
+    step_note(39);
     if (p->short_rune >= 0) LOG("符文升级：造 %d 号失败 → 缺 %d 号 ×%d（现货 %d）；各层 need/have：%d/%d %d/%d %d/%d %d/%d",
         to, p->short_rune, p->short_cnt, p->short_rune >= 1 && p->short_rune <= 33 ? have.rune[p->short_rune] : -1,
         need[to], have.rune[to], to > 1 ? need[to-1] : 0, to > 1 ? have.rune[to-1] : 0,
@@ -238,15 +268,15 @@ void dm_runeup_pump(void) {
     int gi = RCP[g_up.m].gem[0] ? gem_idx(RCP[g_up.m].gem) : -1;
     int cls_gem = gi >= 0 ? g_cls_gem[gi] : 0;
 
+    step_note(40 + g_up.st);
     if (g_up.st == 2) {   // 等光标拿到 → 放进魔盒 | wait for the cursor, then put it into the cube
         // 成叠取件（0x39d724）落的是背包，不是光标；光标没有就按 id 去背包里找。
         // 之前只等光标，于是「3 颗都到了背包但一颗也放不进魔盒」，最后报拿料超时。
         // A stacked pickup (0x39d724) lands in the bag, not on the cursor, so fall back to a lookup by id.
+        // 批量取件会在背包里生成多个新 id，所以按类号找任意一颗来搬，不再死认 g_up.pid。
+        // A bulk pickup creates brand-new ids in the bag, so locate any rune of this class instead of the original id.
         uint64_t h = held_item(pl);
-        if (!h || *(uint32_t *)(h + 8) != g_up.pid) {
-            h = rune_unit_item(b, g_up.pid);
-            if (h && (*(uint32_t *)(h + 0xc) != 0 || *(uint32_t *)(h + 8) != g_up.pid)) h = 0;
-        }
+        if (!h || (int)*(uint32_t *)(h + 4) != cls_from) h = bag_item_of_cls(b, pl, cls_from);
         if (!h) { if (++g_up.wait > 120) up_fail("拿料超时"); return; }
         typedef int (*putfn)(uint64_t, uint64_t, int, int, int, void *);
         uint64_t out[4] = {0, 0, 0, 0}; int r = ((putfn)(b + 0x3bdb10))(h, pl, PG_CUBE, 0xff, 0, out) & 1;
@@ -256,21 +286,31 @@ void dm_runeup_pump(void) {
     }
 
     if (g_up.st == 1) {
+        step_note(411);
         int have_r = cube_of_cls(b, pl, cls_from), have_g = gi >= 0 ? cube_of_cls(b, pl, cls_gem) : 0;
+        step_note(412);
         if (have_r < g_up.want_rune || have_g < g_up.want_gem) {   // 还缺 → 再搬一件 | still short -> move one more piece
             int cls = have_r < g_up.want_rune ? cls_from : cls_gem;
             int kind = 0, page = 0, x = 0, y = 0; uint32_t id = 0;
+            step_note(413);
             if (!pick_material(b, pl, cls, &kind, &page, &x, &y, &id)) { up_fail("库存里挑不到料了"); return; }
+            step_note(414);
             // kind 2 = 高级仓库里的成叠符文：走同一条 0x19 取件包，服务端会从叠里拆一颗出来。
             // 之前这里直接报「成叠来源未支持」，而玩家的小号符文几乎都在成叠里，所以永远合不动。
             // kind 2 = a stacked rune in the advanced stash: use the same 0x19 pickup packet; the server takes one off the stack.
             // It used to bail out with "stacked source unsupported", and since small runes almost always sit in stacks, crafting never worked.
-            if (kind == 2) {   // 成叠：原版「取 1 件到光标」，随后 st==2 会把它放进魔盒 | stacked: original "take 1 to the cursor"; the st==2 step then drops it into the cube
+            if (kind == 2) {   // 成叠：用原版「取 n 件到背包」一次拿够（0x63 去向 1），省掉光标那一跳
+                // dm_actions.c 里实测过：main+0x39d9e0(格控件, _, 模式 0, 件数) → 子操作 2、去向 1、带件数
+                // Stacked: use the original "take n into the inventory" call to grab the whole shortfall in one go,
+                // skipping the cursor hop entirely (measured working in dm_actions.c: main+0x39d9e0(widget, _, 0, count)).
                 uint64_t r = rune_unit_item(b, id);
                 if (!r) { LOG("【红】符文升级：成叠里找不到 id %u", id); up_fail("成叠里找不到那件"); return; }
+                int take = g_up.want_rune - have_r; if (take < 1) take = 1; if (take > 9) take = 9;
                 static uint64_t fake[0x620 / 8]; memset(fake, 0, sizeof fake); fake[0x608 / 8] = r;
-                ((void (*)(void *))(b + 0x39d724))(fake);
-                LOG("符文升级：成叠取 1 件到光标（%d 号 id %u）", RCP[g_up.m].from, id);
+                step_note(415);
+                ((void (*)(void *, int, int, int))(b + 0x39d9e0))(fake, 0, 0, take);
+                step_note(416);
+                LOG("符文升级：成叠取 %d 件到背包（%d 号 id %u）", take, RCP[g_up.m].from, id);
                 g_up.pid = id; g_up.st = 2; g_up.wait = 0; return; }
             uint8_t p[17]; memset(p, 0, sizeof p); p[0] = 0x19;
             uint32_t v[4] = { id, (uint32_t)x, (uint32_t)y, (uint32_t)page }; memcpy(p + 1, v, 16); send_pkt(b, p, 17);
@@ -279,22 +319,35 @@ void dm_runeup_pump(void) {
             g_up.st = 2; g_up.wait = 0; return;
         }
         // 料齐 → 发 0x20 | materials complete -> send 0x20
+        step_note(4121);
         int total = g_up.want_rune + (gi >= 0 ? 1 : 0);
-        uint8_t p[8 + 5 * 4]; memset(p, 0, sizeof p); uint32_t cid = g_up.cube; memcpy(p + 1, &cid, 4);
-        p[5] = PG_CUBE; p[6] = 0; p[7] = (uint8_t)(total - 1);
+        if (total < 1) total = 1; if (total > 16) total = 16;
+        uint8_t p[8 + 5 * 16]; memset(p, 0, sizeof p);   // 原来只有 8+5*4=28 字节，多一项就爆栈 | was 8+5*4=28 bytes; one item more blew the stack
+        uint32_t cid = g_up.cube; memcpy(p + 1, &cid, 4);
+        // 真机实测：手动合一次，服务端收到的包是「页 0 格 0」，不是「页 3」。
+        // 我原来按 PG_CUBE=3 填，服务端拿页 3 去解析魔盒内容就越界崩溃（客户端和服务端同进程，一起死）。
+        // Measured on the real game (a manual transmute): the server receives page 0 / cell 0, not page 3.
+        // Filling PG_CUBE=3 made the server parse the cube contents as page 3 and crash the shared process.
+        p[0] = 0x20;   // 包类型必须自己填！memset 之后忘了设，服务端收到类型 0 的包直接崩
+        p[5] = 0; p[6] = 0; p[7] = (uint8_t)(total - 1);
         int n = 0; uint64_t q = first_item(pl);
         for (int c = 0; q && c < 400 && n < total; c++) { uint64_t d = *(uint64_t *)(q + 0x10); if (!d) break;
             if (PAGE(d) == PG_CUBE) { int cl = (int)*(uint32_t *)(q + 4);
                 if (cl == cls_from || (gi >= 0 && cl == cls_gem)) { int x = 0, y = 0; grid_xy(q, &x, &y);
                     uint32_t iid = *(uint32_t *)(q + 8); memcpy(p + 8 + 5 * n, &iid, 4); p[8 + 5 * n + 4] = (uint8_t)((x & 15) | ((y & 15) << 4)); n++; } }
             q = *(uint64_t *)(d + 0xb0); }
+        step_note(4122);
         if (n < total) { up_fail("魔盒里的料数不对"); return; }
+        dump_pkt(p, 8 + 5 * n);
         send_pkt(b, p, 8 + 5 * n);
+        { char hx[220] = ""; int k = 0; for (int i2 = 0; i2 < 8 + 5 * n && k < 190; i2++) k += snprintf(hx + k, sizeof hx - k, "%02x ", p[i2]);
+          fprintf(stderr, "[dm] 符文升级：我发的 0x20（%d 字节）：%s\n", 8 + 5 * n, hx); fflush(stderr); }
+        step_note(4123);
         LOG("符文升级：发合成 0x20（魔盒 id%u，%d 项，包长 %d，页 %u 格 %u）→ 等结果", g_up.cube, n, 8 + 5 * n, p[5], p[6]);
         g_up.st = 5; g_up.wait = 0; return;
     }
 
-    if (g_up.st == 5) {   // 等结果：产物出现 = 成了 | wait: the product showing up means it worked
+    if (g_up.st == 5) { step_note(45);   // 等结果：产物出现 = 成了 | wait: the product showing up means it worked
         if (++g_up.wait > 200) { up_fail("发合成后 3 秒魔盒没变"); return; }
         if (g_up.wait < 5) return;
         if (cube_of_cls(b, pl, g_cls_rune[g_up.m]) < 1) return;
@@ -331,9 +384,11 @@ int dm_runeup_check(int rune_no, char *why, int cap) {
 int dm_runeup_start(int rune_no, char *why, int cap) {
     uint8_t *b = rb(); if (!b) return 1; uint64_t pl = player(b); if (!pl) return 1;
     LOG("符文升级：v4-force-craft 进入 start（%d 号）", rune_no);   // 标记：确认手机跑的是这一版 | marker to confirm the phone really runs this build
-    uint32_t cid = 0; uint64_t cube = find_cube(b, pl, &cid); if (!cube) { if (why) snprintf(why, cap, "%s", dm_ui("dmRwNoCube")); return 1; }
+    step_note(30);
+    uint32_t cid = 0; uint64_t cube = find_cube(b, pl, &cid); step_note(31); if (!cube) { if (why) snprintf(why, cap, "%s", dm_ui("dmRwNoCube")); return 1; }
     build_cls_cache(b, tables(b, cube));
     if (cube_others(b, pl)) { if (why) snprintf(why, cap, "%s", dm_ui("dmRwCubeBusy")); return 1; }
+    step_note(32);
     plan_t p; if (make_plan(b, tables(b, cube), rune_no, &p)) { if (why) snprintf(why, cap, "%s", dm_ui("dmRwNoMat")); return 1; }
     memset(&g_up, 0, sizeof g_up); g_up.to = rune_no; g_up.cube = cid;
     int first = 0; for (int i = 2; i <= rune_no; i++) if (p.craft[i] > 0) { first = i; break; }
@@ -406,10 +461,15 @@ void dm_runeup_list_text(char *out, int cap) {
 // 符文合成弹框用：每号「还能合几个」，只回 >0 的；返回条数（最多 max 条）
 // For the rune-craft popup: how many of each rune number can still be made; only >0 entries; returns the count (at most max)
 int dm_runeup_list(int *no_out, int *cnt_out, int max) {
+    step_note(10);
     uint8_t *b = rb(); if (!b || !no_out || !cnt_out || max < 1) return 0;
+    step_note(11);
     uint64_t pl = player(b); if (!pl) return 0;
+    step_note(12);
     build_cls_cache(b, up_tables(b, pl));
+    step_note(13);
     inv_t v; scan_inv(b, pl, &v);
+    step_note(14);
     int n = 0;
     for (int no = 2; no <= 33 && n < max; no++) {
         if (!RCP[no].from) continue;

@@ -477,6 +477,13 @@ static int g_tip;
 static int g_rc, g_rc_no[32], g_rc_n;
 int dm_runeup_start(int rune_no, char *why, int cap);   // dm_runeup.c
 static void rc_show(uint64_t root, int on) {
+    // 面板可能已经自动关了（2.3.0 起点空白关面板，还有取件/入盒的副作用），
+    // 这时候 root 是野指针，find_w 递归下去就是崩。和 rc_pump 一样先验指针和虚表。
+    // The panel may already be gone (2.3.0 closes it on an empty-space tap, and the pickup/insert calls can
+    // dismiss it too); root is then a wild pointer and find_w walks into dead memory.
+    if (!root || root < 0x10000) return;
+    uint64_t vt = *(uint64_t *)root;
+    if (!vt || vt < 0x10000 || vt > 0x7fff00000000ULL) return;
     uint64_t bg = find_w(root, "TouchRcBg", 1), title = find_w(root, "TouchRcTitle", 1), close = find_w(root, "TouchRcClose", 1);
     for (int i = 0; i < 32; i++) { char nm[24]; snprintf(nm, sizeof nm, "TouchRcText%d", i); w_move(find_w(root, nm, 1), 99999, 0);
         snprintf(nm, sizeof nm, "TouchRcRow%d", i); w_move(find_w(root, nm, 1), 99999, 0); }
@@ -557,7 +564,9 @@ void dm_pouch_on_uimsg(const char *cat, const char *act, const char *arg) {   //
         if (no > 0) { char why[200] = ""; int r = dm_runeup_start(no, why, sizeof why);
             LOG("%s符文合成：点第 %d 行 → %d 号 %s", r ? "【红】" : "", i + 1, no, r ? why : "开始");
             snprintf(g_notice, sizeof g_notice, r ? "符文合成没开始：%s" : "开始合成 %d 号", r ? why : no); atomic_store(&g_notice_req, 1); }
-        rc_show(root, 0); return; }
+        // 面板已经关了就别再去收弹框：那时 root 的子树已释放，虚表校验都可能骗过去。
+        // Skip closing the popup when the panel is already gone: its subtree is freed, and even the vtable check can lie.
+        if (*(uint8_t *)(B + 0x2d5ff60)) rc_show(root, 0); return; }
     else if (!strcmp(arg, "TouchStore") || !strcmp(arg, "TouchPadStore")) atomic_store(&g_store_req, 1);   // TouchPadStore = 手柄版暂停菜单的「存放」行（touch_layout.py pad_pause） | TouchPadStore = the "Deposit" row of the controller pause menu (touch_layout.py pad_pause)
     else if (!strcmp(arg, "TouchRejuvS")) atomic_store(&g_rejuv_req, 1);   // 小紫框：从囊里取一瓶补到腰带 | small rejuv box: take one from the pouch and top up the belt
     else if (!strcmp(arg, "TouchRejuvL")) atomic_store(&g_rejuv_req, 2);   // 大紫框 | full rejuv box
