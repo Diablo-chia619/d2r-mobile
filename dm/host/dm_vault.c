@@ -139,12 +139,6 @@ static void vault_desc(uint8_t *b, uint64_t G, uint64_t player, uint32_t req) {
     ((void (*)(uint64_t, uint64_t))(b + 0x658be0))(G, nu);
     if (n) atomic_store(&g_desc_ready, 1);
 }
-int dm_vault_get_bits(int kind, int idx, uint8_t *out, int cap) {   // 拷出某件的位流（主线程比较用；找不到或放不下返回 0）
-    pthread_mutex_lock(&g_vmu);
-    int i = vfind(kind, idx), n = 0;
-    if (i >= 0 && g_v[i].len > 0 && (int)g_v[i].len <= cap) { memcpy(out, g_v[i].data, g_v[i].len); n = (int)g_v[i].len; }
-    pthread_mutex_unlock(&g_vmu);
-    return n; }
 int dm_vault_has(int kind, int idx) { pthread_mutex_lock(&g_vmu); int r = g_loaded && vfind(kind, idx) >= 0; pthread_mutex_unlock(&g_vmu); return r; }   // 界面读（游戏主线程）：这一格存着没有 | UI read (game main thread): whether this cell holds a stored item
 
 // ---- 编年史比较（新件 vs 存着的那件）：请求 / 结果都走原子量，建物品和释放全在服务端拍里 ----
