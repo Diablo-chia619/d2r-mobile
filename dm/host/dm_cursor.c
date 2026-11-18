@@ -3502,6 +3502,36 @@ static void tap_log(const char *fmt, ...) {
     FILE *f = fopen("/data/user/0/com.xiaoboluo.d2r.own/files/dm/runeup_widgets.txt", "a"); if (!f) return;
     va_list ap; va_start(ap, fmt); vfprintf(f, fmt, ap); va_end(ap); fputc('\n', f); fclose(f);
 }
+// 按名字扫屏找一个「游戏自己也认」的点：对每个采样点走和真实点击一样的命中链（顶层面板 → click_walk），
+// 只有 g_click_name 正好是目标时才收。控件自己记的矩形、甚至它的命中区，都可能和屏幕上看到的按钮不一致
+// （魔盒并排右移之后控件换了位置；容器型控件的命中区比按钮大得多，重心会落到按钮外面），所以直接问游戏。
+// Scan the screen for a point the game itself agrees on: run every sample point through the same hit chain a
+// real tap uses (top panels then click_walk) and keep only points whose g_click_name is the target. A widget's
+// stored rect, and even its hit area, can disagree with the button you see (the cube was moved aside; a
+// container-like hit area is far larger than the button, so its centroid lands off the button), so ask the game.
+static int ui_name_point(module_t *m, uint64_t root, const char *name, int *ox, int *oy) {
+    int W = *(int32_t *)(m->base + 0x211da38), H = *(int32_t *)(m->base + 0x211da3c);
+    if (W <= 0 || H <= 0 || !root || !name) return 0;
+    uint64_t ch = *(uint64_t *)(root + 0x58), n = *(uint64_t *)(root + 0x60), base = (uint64_t)m->base;
+    if (!ch || n > 256) return 0;
+    int step = H / 32; if (step < 12) step = 12;
+    int x0 = W, x1 = -1, y0 = H, y1 = -1, cnt = 0;
+    for (int y = step / 2; y < H; y += step) for (int x = step / 2; x < W; x += step) {
+        int hit = 0;
+        for (int i = (int)n - 1; i >= 0 && !hit; i--) {
+            uint64_t p_ = *(uint64_t *)(ch + 8 * i);
+            if (!p_ || !*(uint8_t *)(p_ + 0x50)) continue;
+            if (panel_skip((const char *)*(uint64_t *)(p_ + 8)) == 1) continue;
+            if (panel_clipped(p_, SNAP_XY(x, y))) continue;
+            hit = click_walk(p_, SNAP_XY(x, y), 1, base);
+        }
+        if (hit && g_click_name && !strcmp(g_click_name, name)) { cnt++; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+    }
+    if (cnt < 3) return 0;
+    *ox = (x0 + x1) / 2; *oy = (y0 + y1) / 2;
+    tap_log("tap %s：按名扫屏命中 %d 点，区域 x %d..%d y %d..%d → 点 (%d,%d)", name, cnt, x0, x1, y0, y1, *ox, *oy);
+    return 1;
+}
 // 第一步：把光标挪到控件上（悬停），按钮进入 hover 之后才会对按下有反应
 // Step 1: move the cursor onto the widget (hover); the button only reacts to a press once it is hovered.
 int dm_ui_tap_widget(const char *name) {
@@ -3512,7 +3542,7 @@ int dm_ui_tap_widget(const char *name) {
     // 挑最靠上的那个——魔盒在面板上部，item 栏的按钮在底部。
     // Several widgets can share the name (this panel has two "convert": the cube one sits higher than the inventory one).
     // Pick the topmost -- the cube is in the upper part of the panel, the inventory bar is at the bottom.
-    uint64_t w = 0; int w_best_y = 0;
+    uint64_t w = 0; int w_best_y = 0; uint64_t cands[8]; int nc = 0;
     { uint64_t st[1024]; int sp = 0; st[sp++] = root;
       while (sp > 0) { uint64_t cur = st[--sp]; if (!cur) continue;
         const char *nm = (const char *)*(uint64_t *)(cur + 8);
@@ -3538,6 +3568,7 @@ int dm_ui_tap_widget(const char *name) {
                        ax = (int32_t)(uint32_t)xy2; ay = (int32_t)(uint32_t)(xy2 >> 32);
                        aw = (int32_t)(uint32_t)wh2; ah = (int32_t)(uint32_t)(wh2 >> 32); }
                 tap_log("  #%d %#llx  %dx%d @%d,%d  vis=%d", cnt, (unsigned long long)cur, aw, ah, ax, ay, (int)(*(uint8_t *)(cur + 0x50) & 1));
+                if (nc < 8) cands[nc++] = cur;
                 cnt++; }
             uint64_t ch = *(uint64_t *)(cur + 0x58), n = *(uint64_t *)(cur + 0x60);
             if (!ch || n > 256) continue;
@@ -3553,16 +3584,35 @@ int dm_ui_tap_widget(const char *name) {
     if (ww <= 0 || hh <= 0 || ww > 4096 || hh > 4096) { tap_log("tap：%s 矩形无效 %dx%d @%d,%d", name, ww, hh, x, y); return 0; }
     int W = *(int32_t *)(m->base + 0x211da38), H = *(int32_t *)(m->base + 0x211da3c);
     if (W <= 0 || H <= 0) { tap_log("tap：画面尺寸无效 %dx%d", W, H); return 0; }
-    g_tap_x = (int)((double)(x + ww / 2) / 1764.0 * (double)W);
-    g_tap_y = (int)((double)(y + hh / 2) / 1486.0 * (double)H);
-    tap_log("tap %s：%dx%d @%d,%d → 屏幕 (%d,%d) / 画面 %dx%d", name, ww, hh, x, y, g_tap_x, g_tap_y, W, H);
+    // 先用控件自己的命中函数扫出它在画面上的真实位置：魔盒并排右移之后，控件自己记的矩形（+0x38）和它真正的
+    // 屏幕位置对不上（实测偏了大半个按钮，点过去落空）；命中函数走的是游戏自己的坐标链，扫出来的点一定在控件上。
+    // 扫不到（控件不可见 / 已释放）再退回矩形那套算法。
+    // First find its real on-screen position with the widget's own hit-test: after the cube gets moved aside the
+    // rect a widget carries (+0x38) no longer matches where it really is (measured: off by more than half a
+    // button, so the computed point missed); the hit-test follows the game's own coordinate chain, so a point it
+    // reports is guaranteed to be on the widget. Fall back to the rect arithmetic when the scan finds nothing.
+    int scanned = 0;
+    { int px = 0, py = 0;
+      if (ui_name_point(m, root, name, &px, &py)) { g_tap_x = px; g_tap_y = py; scanned = 1; }
+      else {
+      float nx = 0, ny = 0;
+      int got = 0;
+      for (int c = 0; c < nc && !got; c++) got = ui_widget_center(cands[c], W, H, &nx, &ny);   // 同名候选逐个扫：只有真在屏上的那个命中 | scan every same-named candidate: only the one really on screen hits
+      if (got) {
+          g_tap_x = (int)(nx * (float)W); g_tap_y = (int)(ny * (float)H); scanned = 1;
+          tap_log("tap %s：命中扫描 → 屏幕 (%d,%d) / 画面 %dx%d（矩形 %dx%d @%d,%d 不采用）", name, g_tap_x, g_tap_y, W, H, ww, hh, x, y);
+      } else {
+          g_tap_x = (int)((double)(x + ww / 2) / 1764.0 * (double)W);
+          g_tap_y = (int)((double)(y + hh / 2) / 1486.0 * (double)H);
+          tap_log("tap %s：%dx%d @%d,%d → 屏幕 (%d,%d) / 画面 %dx%d", name, ww, hh, x, y, g_tap_x, g_tap_y, W, H);
+      } } }
     // 让游戏自己把坐标吸附到最近的可点控件（真实点击前做的就是这一步），顺便验证命中的是不是目标
     // Let the game snap the point onto the nearest clickable widget (exactly what a real tap does) and report what it lands on.
     { int sx = g_tap_x, sy = g_tap_y;
       int sn = ui_snap(m, root, &sx, &sy);
       tap_log("snap=%d → (%d,%d) 命中 %s", sn, sx, sy, g_click_name ? g_click_name : "(空)");
-      if (sn == 0) { tap_log("snap：周围没有可点控件"); return 0; }
-      g_tap_x = sx; g_tap_y = sy; }
+      if (sn == 0) { if (!scanned) { tap_log("snap：周围没有可点控件"); return 0; } tap_log("snap 0，但命中扫描的点就在控件上 → 照点"); }
+      else { g_tap_x = sx; g_tap_y = sy; } }
     ui_send_mouse(m, root, ui_hash("MouseMove"), g_tap_x, g_tap_y);
     g_tap_stage = 1;
     return 1;
