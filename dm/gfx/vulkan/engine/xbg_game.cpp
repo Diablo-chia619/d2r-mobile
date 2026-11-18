@@ -155,6 +155,15 @@ bool format_feature_flags2=false;
 bool depth16_as_d24=false;
 uint32_t d16_to_d24(uint32_t k){return uint32_t((uint64_t(k)*2*16777215u+65535u)/(2*65535u));}
 uint32_t d24_to_d16(uint32_t v){return uint32_t((uint64_t(v&0xffffffu)*2*65535u+16777215u)/(2*16777215u));}
+// 三星 Xclipse（AMD RDNA）驱动不提供 D24_UNORM_S8_UINT 和 X8_D24_UNORM_PACK32，建这样的图会以 VK_ERROR_FORMAT_NOT_SUPPORTED 闪退（#250）。
+// 这时 NVN Z24X8 (0x33) / Z24S8 (0x35) 存成 D32_SFLOAT / D32_SFLOAT_S8_UINT：着色器读到的仍是 0..1 的深度，上传和读回时
+// 24 位定点与浮点互转（xbg_depth.c，往返无损）。缺省在驱动缺 D24 时打开；标记 gfx-depth24-float（1/0）或 DM_GFX_DEPTH24_FLOAT 强制。
+// Samsung Xclipse (AMD RDNA) drivers offer neither D24_UNORM_S8_UINT nor X8_D24_UNORM_PACK32, and creating such an image aborts with
+// VK_ERROR_FORMAT_NOT_SUPPORTED (#250). Then NVN Z24X8 (0x33) / Z24S8 (0x35) are stored as D32_SFLOAT / D32_SFLOAT_S8_UINT: shaders still
+// read 0..1 depth, and uploads and readbacks convert 24-bit unorm <-> float (xbg_depth.c, exact round trip). On by default when the
+// driver lacks D24; marker gfx-depth24-float (1/0) or DM_GFX_DEPTH24_FLOAT forces it.
+bool depth24_as_d32=false;
+bool d24_stored_as_float(uint32_t nvn){return depth24_as_d32 && (nvn==0x33 || nvn==0x35);}
 bool storage_without_format_listed(VkFormat f){
     switch(f){
     case VK_FORMAT_R8G8B8A8_UNORM:case VK_FORMAT_R8G8B8A8_SNORM:case VK_FORMAT_R8G8B8A8_UINT:case VK_FORMAT_R8G8B8A8_SINT:
@@ -399,6 +408,25 @@ const VkFormatProperties &format_properties(VkFormat f){
     if(uint32_t(f)<256){if(!format_flat_known[f]){vkGetPhysicalDeviceFormatProperties(cfg.physical,f,&format_flat[f]);format_flat_known[f]=true;}return format_flat[f];}
     auto it=format_property_cache.find(f);if(it!=format_property_cache.end())return it->second;
     VkFormatProperties p{};vkGetPhysicalDeviceFormatProperties(cfg.physical,f,&p);return format_property_cache.emplace(f,p).first->second;
+}
+// 深度替身在预热线程开始建管线之前定下来，因为预热记录里渲染通道的格式要按同样的替换改写（warm::remap_depth24）。
+// The depth stand-ins are chosen before the warm-up threads start building, because the render pass formats in warm records are
+// remapped the same way (warm::remap_depth24).
+void choose_depth_storage(const std::string &dir){
+    const VkFormatFeatureFlags ds_needs=VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT|VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT|VK_FORMAT_FEATURE_TRANSFER_SRC_BIT|VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+    const VkFormatProperties &d16=format_properties(VK_FORMAT_D16_UNORM),&d24=format_properties(VK_FORMAT_X8_D24_UNORM_PACK32),&d24s8=format_properties(VK_FORMAT_D24_UNORM_S8_UINT);
+    const VkFormatProperties &f32=format_properties(VK_FORMAT_D32_SFLOAT),&f32s8=format_properties(VK_FORMAT_D32_SFLOAT_S8_UINT);
+    const VkFormatFeatureFlags d24_needs=ds_needs|VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+    bool d16_linear=(d16.optimalTilingFeatures&VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)!=0;depth16_as_d24=!d16_linear && (d24.optimalTilingFeatures&d24_needs)==d24_needs;
+    xbg_logf("NVN depth16 stored as %s (D16 linear filtering=%u, X8_D24 features=%#x)",depth16_as_d24?"X8_D24":"D16",unsigned(d16_linear),d24.optimalTilingFeatures);
+    bool d24_missing=(d24.optimalTilingFeatures&ds_needs)!=ds_needs || (d24s8.optimalTilingFeatures&ds_needs)!=ds_needs;
+    bool f32_usable=(f32.optimalTilingFeatures&ds_needs)==ds_needs && (f32s8.optimalTilingFeatures&ds_needs)==ds_needs;
+    depth24_as_d32=d24_missing && f32_usable;const char *how=depth24_as_d32?"(driver lacks D24)":d24_missing?"(driver lacks D24, but D32 lacks features too)":"(default)";
+    FILE *m=fopen((dir+"/gfx-depth24-float").c_str(),"rb");
+    if(m){depth24_as_d32=fgetc(m)!='0';fclose(m);how="(marker gfx-depth24-float)";}
+    else if(const char *e=getenv("DM_GFX_DEPTH24_FLOAT")){depth24_as_d32=atoi(e)!=0;how="(DM_GFX_DEPTH24_FLOAT)";}
+    xbg_logf("NVN depth24 Z24X8/Z24S8 stored as %s %s: X8_D24 features=%#x D24S8=%#x D32F=%#x D32FS8=%#x",depth24_as_d32?"D32_SFLOAT/D32_SFLOAT_S8_UINT":"X8_D24/D24S8",how,
+        d24.optimalTilingFeatures,d24s8.optimalTilingFeatures,f32.optimalTilingFeatures,f32s8.optimalTilingFeatures);
 }
 struct ArenaChunk{VkBuffer buffer{};VkDeviceMemory memory{};uint8_t *mapped{};VkDeviceSize size=0,used=0;bool coherent=true;};
 constexpr VkBufferUsageFlags arena_usage=VK_BUFFER_USAGE_TRANSFER_SRC_BIT|VK_BUFFER_USAGE_TRANSFER_DST_BIT|VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT|VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT|VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT|VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_INDEX_BUFFER_BIT|VK_BUFFER_USAGE_VERTEX_BUFFER_BIT|VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
@@ -1676,6 +1704,9 @@ template<class Buf> void append_depth_planes(Buf &data,std::vector<VkBufferImage
     if(packed)need(xbg_depth_extract(format,w,h,slices,packed,packed_bytes,row,image,
         f.depth_bytes?(widen?d16.data():data.data()+begin):nullptr,widen?d16.size():depth_bytes,f.stencil_bytes?data.data()+stencil_begin:nullptr,stencil_bytes)==0,"Invalid packed NVN depth upload extent");
     for(size_t i=0;i<d16.size()/2;i++){uint16_t k;memcpy(&k,&d16[i*2],2);uint32_t v=d16_to_d24(k);memcpy(data.data()+begin+i*4,&v,4);}
+    // 24 位深度存成浮点时，就地把提取出的定点值换成 float。
+    // With 24-bit depth stored as float, convert the extracted unorm values to float in place.
+    if(packed && f.depth_bytes && d24_stored_as_float(format))for(size_t i=0;i<size_t(pixels);i++){uint32_t v;memcpy(&v,data.data()+begin+i*4,4);v=xbg_depth_unorm24_to_float(v);memcpy(data.data()+begin+i*4,&v,4);}
     if(f.depth_bytes){auto r=region;r.bufferOffset=begin;r.imageSubresource.aspectMask=VK_IMAGE_ASPECT_DEPTH_BIT;copies.push_back(r);}
     if(f.stencil_bytes){auto r=region;r.bufferOffset=stencil_begin;r.imageSubresource.aspectMask=VK_IMAGE_ASPECT_STENCIL_BIT;copies.push_back(r);}
 }
@@ -1730,7 +1761,7 @@ Image &get_image_slow(const tex_t *t,bool upload){CPU_SCOPE(Image);
             VkFormatProperties np;vkGetPhysicalDeviceFormatProperties(cfg.physical,format(t->d.format),&np);if((np.optimalTilingFeatures&need_bc)==need_bc)p->decoded=false;}
         if(xbg_bc_format_info(t->d.format,&info)==0)++(p->decoded?decoded_bc_images:native_bc_images);
         if(p->decoded){p->bpp=info.bytes_per_pixel;p->fmt=decoded_format(info.pixels);need(p->samples==VK_SAMPLE_COUNT_1_BIT,"BC texture cannot be multisampled");}
-        else {p->fmt=format(t->d.format);p->bpp=t->L.bpb;if(t->d.format==0x32 && depth16_as_d24)p->fmt=VK_FORMAT_X8_D24_UNORM_PACK32;}
+        else {p->fmt=format(t->d.format);p->bpp=t->L.bpb;if(t->d.format==0x32 && depth16_as_d24)p->fmt=VK_FORMAT_X8_D24_UNORM_PACK32;if(d24_stored_as_float(t->d.format))p->fmt=t->d.format==0x35?VK_FORMAT_D32_SFLOAT_S8_UINT:VK_FORMAT_D32_SFLOAT;}
         VkFormatProperties fp;vkGetPhysicalDeviceFormatProperties(cfg.physical,p->fmt,&fp);
         VkImageUsageFlags usage=VK_IMAGE_USAGE_TRANSFER_SRC_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT;
         if(fp.optimalTilingFeatures&VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)usage|=VK_IMAGE_USAGE_SAMPLED_BIT;
@@ -2017,7 +2048,7 @@ void pipe_memo_fill(PipeMemoKey &k,const void *layout,const void *pass_def,VkRen
 void validate_capabilities(const std::vector<uint32_t> &w,uint32_t stage){
     need(w.size()>=5 && w[0]==0x07230203,"Invalid packaged SPIR-V");bool group_operations=false;VkSubgroupFeatureFlags groups=0;
     for(size_t i=5;i<w.size();){uint32_t count=w[i]>>16,op=w[i]&65535;need(count && i+count<=w.size(),"Invalid SPIR-V instruction bounds");if(op>=333 && op<=366)group_operations=true;
-        if(op==17){uint32_t cap=w[i+1];bool ok=true;switch(cap){case 1:case 46:case 47:case 50:break;case 2:ok=cfg.enabled_core.geometryShader;break;case 3:ok=cfg.enabled_core.tessellationShader;break;case 10:ok=cfg.enabled_core.shaderFloat64;break;case 11:ok=cfg.enabled_core.shaderInt64;break;case 22:ok=cfg.enabled_core.shaderInt16;break;case 25:ok=cfg.enabled_core.shaderImageGatherExtended;break;case 32:ok=cfg.enabled_core.shaderClipDistance;break;case 33:ok=cfg.enabled_core.shaderCullDistance;break;case 35:ok=cfg.enabled_core.sampleRateShading;break;case 49:ok=cfg.enabled_core.shaderStorageImageExtendedFormats;break;case 55:ok=cfg.enabled_core.shaderStorageImageReadWithoutFormat;break;case 56:ok=cfg.enabled_core.shaderStorageImageWriteWithoutFormat;break;case 61:groups|=VK_SUBGROUP_FEATURE_BASIC_BIT;break;case 62:groups|=VK_SUBGROUP_FEATURE_VOTE_BIT;break;case 63:groups|=VK_SUBGROUP_FEATURE_ARITHMETIC_BIT;break;case 64:groups|=VK_SUBGROUP_FEATURE_BALLOT_BIT;break;case 65:groups|=VK_SUBGROUP_FEATURE_SHUFFLE_BIT;break;case 66:groups|=VK_SUBGROUP_FEATURE_SHUFFLE_RELATIVE_BIT;break;case 4427:ok=cfg.enabled_shader_draw_parameters;break;default:xbg_fatalf("Shader stage %u has unhandled capability %u",stage,cap);}if(!ok)xbg_fatalf("Shader stage %u requires disabled capability %u",stage,cap);}
+        if(op==17){uint32_t cap=w[i+1];bool ok=true;switch(cap){case 1:case 46:case 47:case 50:case 51:break;case 2:ok=cfg.enabled_core.geometryShader;break;case 3:ok=cfg.enabled_core.tessellationShader;break;case 10:ok=cfg.enabled_core.shaderFloat64;break;case 11:ok=cfg.enabled_core.shaderInt64;break;case 22:ok=cfg.enabled_core.shaderInt16;break;case 25:ok=cfg.enabled_core.shaderImageGatherExtended;break;case 32:ok=cfg.enabled_core.shaderClipDistance;break;case 33:ok=cfg.enabled_core.shaderCullDistance;break;case 35:ok=cfg.enabled_core.sampleRateShading;break;case 49:ok=cfg.enabled_core.shaderStorageImageExtendedFormats;break;case 55:ok=cfg.enabled_core.shaderStorageImageReadWithoutFormat;break;case 56:ok=cfg.enabled_core.shaderStorageImageWriteWithoutFormat;break;case 61:groups|=VK_SUBGROUP_FEATURE_BASIC_BIT;break;case 62:groups|=VK_SUBGROUP_FEATURE_VOTE_BIT;break;case 63:groups|=VK_SUBGROUP_FEATURE_ARITHMETIC_BIT;break;case 64:groups|=VK_SUBGROUP_FEATURE_BALLOT_BIT;break;case 65:groups|=VK_SUBGROUP_FEATURE_SHUFFLE_BIT;break;case 66:groups|=VK_SUBGROUP_FEATURE_SHUFFLE_RELATIVE_BIT;break;case 4427:ok=cfg.enabled_shader_draw_parameters;break;default:xbg_fatalf("Shader stage %u has unhandled capability %u",stage,cap);}if(!ok)xbg_fatalf("Shader stage %u requires disabled capability %u",stage,cap);}
         if(op==10)xbg_fatalf("Shader stage %u declares extension requiring explicit backend support",stage);i+=count;
     }
     need((subgroup.supportedOperations&groups)==groups,"Required subgroup operations unavailable");if(group_operations)need(subgroup.supportedStages&(1u<<stage),"Actual subgroup operation unsupported in shader stage");
@@ -2029,13 +2060,26 @@ void validate_capabilities(const std::vector<uint32_t> &w,uint32_t stage){
 // loaders apply it, so the warm-up builds the same modules the game binds. Off unless the host asks
 // (DM_GFX_QUAD_DERIVATIVES, which the Android app sets to 1; marker gfx-quad-derivatives = 1 / 0).
 bool quad_derivatives=false;std::atomic<uint64_t> quad_rewrites{0};
+// 片元阶段不支持子组操作的驱动（Adreno 650 旧驱动、Maleoon 910：supportedStages 只有计算阶段，#243 #155）：片元着色器的
+// shuffle 不管 gfx-quad-derivatives 怎么设都改写，用放宽模式，再去掉改写后不用的辅助函数、内置变量和能力声明；不然载入时
+// 的能力检查会中止（D2R：182 个片元着色器各有一个 shuffle 辅助函数）。标记 gfx-no-fragment-subgroups（1）或
+// DM_GFX_NO_FRAGMENT_SUBGROUPS=1 在支持的设备上假装不支持，用来测试。
+// Drivers without subgroup operations in the fragment stage (old Adreno 650 drivers, Maleoon 910: supportedStages holds only
+// compute, #243 #155): fragment shuffles are rewritten whatever gfx-quad-derivatives says, in relaxed mode, and the helper
+// functions, built-in variables and capability declarations the rewrite leaves unused are removed; otherwise the capability
+// check aborts at load (D2R: 182 fragment shaders with one shuffle helper each). The marker gfx-no-fragment-subgroups (1) or
+// DM_GFX_NO_FRAGMENT_SUBGROUPS=1 pretends a supporting device lacks it, for testing.
+bool fragment_subgroups=true;
 void quad_rewrite(std::vector<uint32_t> &words,uint32_t stage,const char *key,const char *loader){
-    if(!quad_derivatives || stage!=4)return;
+    if(stage!=4 || (!quad_derivatives && fragment_subgroups))return;
+    const bool relaxed=!fragment_subgroups;
     std::vector<uint32_t> out;xbg_spirv_quad_stats counts;
-    size_t k=xbg_spirv_quad_derivatives(words.data(),words.size(),out,&counts);
+    size_t k=xbg_spirv_quad_derivatives(words.data(),words.size(),out,&counts,relaxed);
     if(k){words.swap(out);quad_rewrites.fetch_add(k,std::memory_order_relaxed);}
+    size_t stripped=0;if(relaxed && k){stripped=xbg_spirv_strip_subgroup(words.data(),words.size(),out);if(stripped)words.swap(out);}
     if(counts.candidates || counts.calls){
         char line[768];int at=snprintf(line,sizeof(line),"NVN quad shader=%s loader=%s candidates=%zu rewritten=%zu guarded_nonfinite=%zu calls=%zu calls_rewritten=%zu",key,loader,counts.candidates,counts.rewritten,counts.guarded_nonfinite,counts.calls,counts.calls_rewritten);
+        if(relaxed)at+=snprintf(line+at,sizeof(line)-at," relaxed_float=%zu integer=%zu stripped=%zu",counts.calls_relaxed_float,counts.calls_integer,stripped);
         for(size_t r=0;r<size_t(xbg_quad_skip::count) && at<int(sizeof(line))-64;++r)if(counts.skipped[r])at+=snprintf(line+at,sizeof(line)-at," skip_%s=%zu",xbg_spirv_quad_skip_name(xbg_quad_skip(r)),counts.skipped[r]);
         for(size_t r=0;r<size_t(xbg_quad_call_skip::count) && at<int(sizeof(line))-64;++r)if(counts.call_skipped[r])at+=snprintf(line+at,sizeof(line)-at," call_skip_%s=%zu",xbg_spirv_quad_call_skip_name(xbg_quad_call_skip(r)),counts.call_skipped[r]);
         xbg_logf("%s",line);
@@ -2147,7 +2191,7 @@ Shader *load_shader(const void *control){
     // Time of each part of the load (file read, SPIR-V rewrites, analysis, module creation), for the loaded line below.
     const uint64_t load_t1=timing_clock();uint64_t load_t2=0,load_t3=0;
     auto p=std::make_unique<Shader>();p->key=key;p->stage=h.stage;p->bindings.resize(h.binding_count);memcpy(p->bindings.data(),bytes.data()+offset,h.binding_count*sizeof(xbg_shader_binding));offset+=h.binding_count*sizeof(xbg_shader_binding);p->inputs.resize(h.input_count);memcpy(p->inputs.data(),bytes.data()+offset,h.input_count*4);offset+=h.input_count*4;p->c1.assign(bytes.begin()+offset,bytes.begin()+offset+h.c1_bytes);offset+=h.c1_bytes;
-    std::vector<uint32_t> words(h.spirv_bytes/4);memcpy(words.data(),bytes.data()+offset,h.spirv_bytes);spv_override(key,words);validate_capabilities(words,h.stage);
+    std::vector<uint32_t> words(h.spirv_bytes/4);memcpy(words.data(),bytes.data()+offset,h.spirv_bytes);spv_override(key,words);
     // gfx-shader-reuse：预热线程已改写过这个着色器时直接取用；2 时照样改写，与取来的逐字比对。
     // gfx-shader-reuse: take the warm-up threads' rewrite of this shader when there is one; with 2, rewrite as well and compare word by word.
     std::vector<uint32_t> reused;const bool have_reused=shader_reuse && !ab_off("shreuse") && warm::take_rewritten(key,reused);
@@ -2158,6 +2202,10 @@ Shader *load_shader(const void *control){
     if(!have_reused || shader_reuse==2){inlined=inline_rewrite(words,key);quad_rewrite(words,h.stage,key.c_str(),"runtime");warp_rewrite(words,h.stage,key.c_str(),"runtime");tidy_rewrite(words);guard_rewrite(words,h.stage,key.c_str(),"runtime");
         if(have_reused && reused!=words){++shader_reuse_mismatches;xbg_logf("NVN shader reuse MISMATCH %s stage=%u words=%zu/%zu",key.c_str(),h.stage,reused.size(),words.size());}}
     else words.swap(reused);
+    // 能力检查放在改写之后：片元阶段不支持子组的驱动上，改写才去掉 shuffle（#243 #155）。
+    // The capability check runs after the rewrites: on drivers without fragment subgroups the rewrite is what removes the
+    // shuffles (#243 #155).
+    validate_capabilities(words,h.stage);
     if(have_reused)++shaders_reused;
     load_t2=timing_clock();
     {auto extent=spirv_uniform_extent(words);uint32_t trimmed=0;for(auto &b:p->bindings)if(b.type==VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER && b.source==XBG_SOURCE_UNIFORM){auto e=extent.find(b.binding);uint32_t declared=b.bytes?b.bytes:65536;if(e!=extent.end() && e->second<declared){b.bytes=e->second;++trimmed;}}uniform_trimmed+=trimmed;}
@@ -2265,6 +2313,21 @@ void record(const VkGraphicsPipelineCreateInfo &ci,const XbgPipelineKey &key){
     auto put=[](uint32_t v){for(int i=0;i<4;i++)pending.push_back(uint8_t(v>>(8*i)));};
     put(0x57504c58);put(uint32_t(keys.size()));for(auto &k:keys){put(uint32_t(k.size()));pending.insert(pending.end(),k.begin(),k.end());}
     put(key.count);pending.insert(pending.end(),bytes.begin(),bytes.end());
+}
+// 24 位深度存成浮点时，记录里渲染通道附件的 D24 格式换成同样的替身，记录才对得上运行时的管线键。X8_D24 同时是 D16 的替身
+// （depth16_as_d24）时不改它：那样的记录多半来自 D16 阴影图。
+// With 24-bit depth stored as float, the D24 formats of a record's render pass attachments become the same stand-ins, so the record
+// matches the runtime pipeline key. X8_D24 stays while it is also the D16 stand-in (depth16_as_d24): such records most likely come
+// from D16 shadow maps.
+size_t remapped_records=0;
+void remap_depth24(std::vector<uint32_t> &w){
+    if(w.size()<3 || w[0]!=1)return;size_t i=1;uint32_t ln=w[i++];if(ln>=w.size()-i)return;i+=ln;uint32_t pn=w[i++];if(pn<2 || pn>w.size()-i)return;
+    uint32_t na=w[i+1];if(na>9 || 2+size_t(na)*9>pn)return;
+    bool changed=false;
+    for(uint32_t k=0;k<na;k++){uint32_t &f=w[i+2+size_t(k)*9+1];
+        if(f==uint32_t(VK_FORMAT_D24_UNORM_S8_UINT))f=uint32_t(VK_FORMAT_D32_SFLOAT_S8_UINT),changed=true;
+        else if(f==uint32_t(VK_FORMAT_X8_D24_UNORM_PACK32) && !depth16_as_d24)f=uint32_t(VK_FORMAT_D32_SFLOAT),changed=true;}
+    if(changed)++remapped_records;
 }
 void flush(){if(pending.empty())return;FILE *f=fopen(list_path().c_str(),"ab");if(!f)return;bool ok=fwrite(pending.data(),1,pending.size(),f)==pending.size();ok=fclose(f)==0&&ok;if(ok)pending.clear();}
 // gfx-shader-reuse：预热改写好的 SPIR-V，按着色器键留到 load_shader 取走（取走即删）；没用到的随 shutdown 释放。
@@ -2383,15 +2446,15 @@ void start(){
         size_t i=0;auto get=[&](uint32_t &v){if(i+4>b.size())return false;memcpy(&v,b.data()+i,4);i+=4;return true;};
         while(ok && i<b.size()){uint32_t magic,ns,count;if(!get(magic)||magic!=0x57504c58||!get(ns)||ns>5)break;Rec r;bool good=true;
             for(uint32_t s=0;s<ns && good;s++){uint32_t len;if(!get(len)||len>256||i+len>b.size()){good=false;break;}r.keys.emplace_back(reinterpret_cast<const char*>(b.data()+i),len);i+=len;}
-            if(!good||!get(count)||count>XbgPipelineKey::Capacity||i+size_t(count)*4>b.size())break;r.words.resize(count);memcpy(r.words.data(),b.data()+i,size_t(count)*4);i+=size_t(count)*4;
+            if(!good||!get(count)||count>XbgPipelineKey::Capacity||i+size_t(count)*4>b.size())break;r.words.resize(count);memcpy(r.words.data(),b.data()+i,size_t(count)*4);i+=size_t(count)*4;if(depth24_as_d32)remap_depth24(r.words);
             if(known.insert(std::string(reinterpret_cast<const char*>(r.words.data()),r.words.size()*4)).second)recs.push_back(std::move(r));}}
-    xbg_logf("NVN warm list=%zu enabled=%d",recs.size(),int(enabled));
+    xbg_logf("NVN warm list=%zu enabled=%d depth24-remapped=%zu",recs.size(),int(enabled),remapped_records);
     if(!enabled || recs.empty())return;stop=false;next=0;unsigned n=std::min<unsigned>(3,std::max(1u,std::thread::hardware_concurrency()/3));
     for(unsigned i=0;i<n;i++)threads.emplace_back(worker);
 }
 void shutdown(){{std::lock_guard<std::mutex> l(mu);stop=true;}async_cv.notify_all();for(auto &t:threads)if(t.joinable())t.join();threads.clear();if(async_thread.joinable())async_thread.join();std::lock_guard<std::mutex> l(mu);async_q.clear();async_pending.clear();async_failed.clear();
     for(auto &p:ready)vkDestroyPipeline(cfg.device,p.second,nullptr);ready.clear();for(auto &p:layouts)vkDestroyPipelineLayout(cfg.device,p.second,nullptr);layouts.clear();for(auto s:set_layouts)vkDestroyDescriptorSetLayout(cfg.device,s,nullptr);set_layouts.clear();
-    for(auto &p:passes)vkDestroyRenderPass(cfg.device,p.second,nullptr);passes.clear();for(auto &m:modules)vkDestroyShaderModule(cfg.device,m.second,nullptr);modules.clear();ids.clear();id_keys.clear();recs.clear();known.clear();rewritten.clear();}
+    for(auto &p:passes)vkDestroyRenderPass(cfg.device,p.second,nullptr);passes.clear();for(auto &m:modules)vkDestroyShaderModule(cfg.device,m.second,nullptr);modules.clear();ids.clear();id_keys.clear();recs.clear();known.clear();rewritten.clear();remapped_records=0;}
 bool take(const std::string &bytes,VkPipeline &out){std::lock_guard<std::mutex> l(mu);auto it=ready.find(bytes);if(it==ready.end())return false;out=it->second;ready.erase(it);return true;}
 }
 // Diagnostic (marker gfx-pipe-stats, with the warm-up off): the driver's statistics of each pipeline as it is created, and
@@ -3418,6 +3481,10 @@ void draw(int prim,int first,int count,const p_draw_idx *indexed,uint32_t instan
     VkPipelineViewportStateCreateInfo vp{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};vp.viewportCount=vp.scissorCount=1;
     VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};rs.polygonMode=state.poly.mode==2?VK_POLYGON_MODE_FILL:state.poly.mode==1?VK_POLYGON_MODE_LINE:VK_POLYGON_MODE_POINT;need(rs.polygonMode==VK_POLYGON_MODE_FILL || cfg.enabled_core.fillModeNonSolid,"Non-solid polygon mode disabled");rs.cullMode=state.poly.cull;rs.frontFace=state.poly.front?VK_FRONT_FACE_COUNTER_CLOCKWISE:VK_FRONT_FACE_CLOCKWISE;rs.lineWidth=1;rs.depthBiasEnable=state.poly.offset_en!=0;rs.depthBiasConstantFactor=state.bias[1]*(state.rt.depth && state.rt.depth->d.format==0x32 && depth16_as_d24?256.0f:1.0f);
     rs.depthBiasSlopeFactor=state.bias[0];rs.depthBiasClamp=state.bias[2];need(!rs.depthBiasClamp || cfg.enabled_core.depthBiasClamp,"Depth bias clamp disabled");   // constant bias units: 2^-16 for D16, 2^-24 for the X8_D24 stand-in; slope and clamp do not depend on the format
+    // 浮点深度的常数偏移单位随图元深度的指数变（[0.5,1) 里等于 D24 的 2^-24，更小的深度更细）。记下前几次，看游戏在 24 位深度上用不用偏移。
+    // The constant bias unit of float depth follows the exponent of the primitive's depth (2^-24 like D24 in [0.5,1), finer below).
+    // Log the first few, to see whether the game uses bias on 24-bit depth.
+    if(rs.depthBiasEnable && state.rt.depth && d24_stored_as_float(state.rt.depth->d.format)){static unsigned n=0;if(n++<4)xbg_logf("NVN depth bias on the float stand-in of format=%#x units=%g slope=%g clamp=%g",state.rt.depth->d.format,rs.depthBiasConstantFactor,rs.depthBiasSlopeFactor,rs.depthBiasClamp);}
     VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};ms.rasterizationSamples=p.samples;ms.alphaToCoverageEnable=state.ms.a2c;need(!state.ms.sl_en,"Custom sample locations unsupported");need(!state.ms.samples || state.ms.samples==uint32_t(p.samples),"NVN sample count differs from attachments");need(p.samples==VK_SAMPLE_COUNT_1_BIT || state.ms.enable,"Disabled multisampling on multisample target needs coverage emulation");
     VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};ds.depthTestEnable=state.ds.dt;ds.depthWriteEnable=state.ds.dw;ds.depthCompareOp=VkCompareOp(state.ds.df-1);ds.stencilTestEnable=state.ds.st;ds.front=stencil(false);ds.back=stencil(true);ds.depthBoundsTestEnable=state.bounds.enable;ds.minDepthBounds=state.bounds.minimum;ds.maxDepthBounds=state.bounds.maximum;need(!ds.depthBoundsTestEnable || cfg.enabled_core.depthBounds,"Depth bounds feature disabled");
     need(!(ds.depthTestEnable || ds.stencilTestEnable) || state.rt.depth,"Depth/stencil state requires attachment");
@@ -3743,6 +3810,9 @@ void copy_texture_buffer(const p_copy_b2t &request,bool to_buffer){preflight_cpu
             for(auto &r:copies){if(r.imageSubresource.aspectMask==VK_IMAGE_ASPECT_DEPTH_BIT)dp=static_cast<const uint8_t*>(staging.mapped)+(r.bufferOffset-staging.offset);else sp=static_cast<const uint8_t*>(staging.mapped)+(r.bufferOffset-staging.offset);}
             size_t pixels=size_t(p.r.width)*p.r.height*p.r.depth;
             std::vector<uint8_t> d16;if(dp && p.tex->d.format==0x32 && depth16_as_d24){d16.resize(pixels*2);for(size_t i=0;i<pixels;i++){uint32_t v;memcpy(&v,dp+i*4,4);uint16_t k=uint16_t(d24_to_d16(v));memcpy(&d16[i*2],&k,2);}dp=d16.data();}
+            // 浮点替身读回时换回 24 位定点，再按 NVN 打包。
+            // A float stand-in reads back as 24-bit unorm before the NVN packing.
+            std::vector<uint8_t> d24;if(dp && d24_stored_as_float(p.tex->d.format)){d24.resize(pixels*4);for(size_t i=0;i<pixels;i++){uint32_t v;memcpy(&v,dp+i*4,4);v=xbg_depth_float_to_unorm24(v);memcpy(&d24[i*4],&v,4);}dp=d24.data();}
             need(xbg_depth_merge(p.tex->d.format,p.r.width,p.r.height,p.r.depth,reinterpret_cast<void*>(p.src),bytes,row,image,dp,pixels*f.depth_bytes,sp,pixels*f.stencil_bytes)==0,"Packed NVN depth readback merge failed");
         }else im.gpu_written=true,provenance_write(im,__LINE__);
         xbg_logf("NVN depth %s serial=%llu format=%#x level=%u layer=%u region=%dx%dx%d planes=%zu",to_buffer?"readback":"upload",(unsigned long long)p.tex->serial,p.tex->d.format,level,layer,p.r.width,p.r.height,p.r.depth,copies.size());return;
@@ -4167,6 +4237,10 @@ extern "C" int xbg_game_initialize(const xbg_game_config *c,char *error,size_t b
      if(rewrites_fault)xbg_logf("NVN Adreno 740/750 (device \"%s\"): the quad-derivative and warp32 rewrites default off; a marker file still turns either on",properties.deviceName);
      auto sw=[&](const char *marker,const char *env){FILE *q=fopen((base+marker).c_str(),"rb");const bool present=q!=nullptr;int c=-1;if(q){c=fgetc(q);fclose(q);}return xbg_adreno_rewrite_option(present,c,getenv(env),rewrites_fault);};
      quad_derivatives=sw("/gfx-quad-derivatives","DM_GFX_QUAD_DERIVATIVES");
+     {bool pretend=false;FILE *q=fopen((base+"/gfx-no-fragment-subgroups").c_str(),"rb");if(q){pretend=fgetc(q)!='0';fclose(q);}else if(const char *e=getenv("DM_GFX_NO_FRAGMENT_SUBGROUPS"))pretend=atoi(e)!=0;
+      if(pretend)subgroup.supportedStages&=~VkShaderStageFlags(VK_SHADER_STAGE_FRAGMENT_BIT);
+      fragment_subgroups=(subgroup.supportedStages&VK_SHADER_STAGE_FRAGMENT_BIT)!=0;
+      xbg_logf("NVN fragment subgroups=%d stages=%#x%s: %s",int(fragment_subgroups),subgroup.supportedStages,pretend?" (marker gfx-no-fragment-subgroups)":"",fragment_subgroups?"fragment shuffles as configured":"fragment shuffles rewritten to derivatives in relaxed mode, unused helpers removed");}
      warp32=sw("/gfx-warp32","DM_GFX_WARP32");
      xbg_logf("NVN quad shuffles to fine derivatives=%d (marker gfx-quad-derivatives)",int(quad_derivatives));
      xbg_logf("NVN 32-lane warps in wider subgroups=%d subgroup=%u (marker gfx-warp32)",int(warp32),subgroup.subgroupSize);
@@ -4185,6 +4259,7 @@ extern "C" int xbg_game_initialize(const xbg_game_config *c,char *error,size_t b
      xbg_logf("NVN translator output clean-up: component fold=%d (marker gfx-ldc-fold) forwarded temporaries=%d (marker gfx-forward-temps)",int(ldc_fold),int(forward_temps));
      {FILE *q=fopen((base+"/gfx-shader-reuse").c_str(),"rb");shader_reuse=0;if(q){int c=fgetc(q);shader_reuse=c=='0'?0:c=='2'?2:1;fclose(q);}else if(const char *e=getenv("DM_GFX_SHADER_REUSE"))shader_reuse=atoi(e);
       warm::keep_rewritten=shader_reuse!=0;xbg_logf("NVN shader loads take the warm-up's rewritten SPIR-V=%d (marker gfx-shader-reuse; 2 also rewrites and compares)",shader_reuse);}}
+    {std::string dir=cfg.shader_directory;size_t cut=dir.find_last_of('/');choose_depth_storage(cut==std::string::npos?dir:dir.substr(0,cut));}
     pipeguard::load();xbg_module_id_hook=warm::module_id;{std::string lp=warm::list_path();FILE *nw=fopen((lp.substr(0,lp.find_last_of('/'))+"/gfx-no-warm").c_str(),"rb");warm::enabled=!nw;if(nw)fclose(nw);}warm::start();
     wtrack::enabled=false;state=State{};state.color.logic_op=3;state.color.alpha_func=8;for(unsigned i=0;i<8;i++)state.blend[i]={i,2,1,2,1,1,1};stats.reset();timing=XbgCpuTiming(timing_clock);pipeline_counts={};pipeline_before={};pipeline_tick=0;timing_active=false;timing_first=timing_last=0;live_profile_used=false;descriptor_detail=false;descriptor_timing=XbgDescriptorTiming{};descriptor_root=nullptr;draw_detail=false;draw_timing=XbgDrawTiming{};draw_root=nullptr;completed=0;last_attachment_trace=UINT64_MAX;sampler_mirror_clamp_enabled=VK_FALSE;failed=false;error_text[0]=0;initialized=true;
     {std::string dir=cfg.shader_directory;size_t cut=dir.find_last_of('/');FILE *m=fopen(((cut==std::string::npos?dir:dir.substr(0,cut))+"/gfx-sync-submit").c_str(),"rb");bool sync_submit=false;if(m){sync_submit=fgetc(m)=='1';fclose(m);}{FILE *w=fopen(((cut==std::string::npos?dir:dir.substr(0,cut))+"/gfx-async-pool-reset").c_str(),"rb");poolreset::enabled=false;if(w){poolreset::enabled=fgetc(w)!='0';fclose(w);}else if(const char *e=getenv("DM_GFX_ASYNC_POOL_RESET"))poolreset::enabled=atoi(e)!=0;poolreset::start();xbg_logf("NVN async command pool reset=%d (marker gfx-async-pool-reset)",int(poolreset::enabled));}{FILE *w=fopen(((cut==std::string::npos?dir:dir.substr(0,cut))+"/gfx-no-bindcache").c_str(),"rb");if(w){bind_cache_enabled=false;fclose(w);}}{FILE *w=fopen(((cut==std::string::npos?dir:dir.substr(0,cut))+"/gfx-no-imgcache").c_str(),"rb");if(w){img_cache_enabled=false;fclose(w);}}{FILE *w=fopen(((cut==std::string::npos?dir:dir.substr(0,cut))+"/gfx-pass-profile").c_str(),"rb");if(w){pass_prof_enabled=true;unsigned long long from=0,period=0,count=0;if(fscanf(w,"%llu %llu %llu",&from,&period,&count)>=2){pass_prof_next=from;pass_prof_period=period?period:1;if(count)pass_prof_until=from+count;}fclose(w);}}{FILE *w=fopen(((cut==std::string::npos?dir:dir.substr(0,cut))+"/gfx-no-descmemo").c_str(),"rb");if(w){desc_memo_enabled=false;fclose(w);}xbg_logf("NVN descmemo enabled=%d",int(desc_memo_enabled));}{FILE *w=fopen(((cut==std::string::npos?dir:dir.substr(0,cut))+"/gfx-no-dynpartial").c_str(),"rb");if(w){dyn_partial_enabled=false;fclose(w);}}{FILE *w=fopen(((cut==std::string::npos?dir:dir.substr(0,cut))+"/gfx-no-xmemo").c_str(),"rb");if(w){xmemo_enabled=false;fclose(w);}xbg_logf("NVN cross-frame memo enabled=%d",int(xmemo_enabled));}{auto marker=[&](const char *name){FILE *w=fopen(((cut==std::string::npos?dir:dir.substr(0,cut))+name).c_str(),"rb");int c=-1;if(w){c=fgetc(w);fclose(w);}return c;};persistent_fb_enabled=marker("/gfx-no-persistent-fb")<0;slot_pools_enabled=marker("/gfx-no-slot-pools")<0;readback_cached=marker("/gfx-readback-cached")=='1' || (marker("/gfx-readback-cached")<0 && getenv("DM_GFX_READBACK_CACHED") && *getenv("DM_GFX_READBACK_CACHED")=='1');texel_memo_enabled=marker("/gfx-no-texel-memo")<0;no_occlusion_queries=marker("/gfx-no-occlusion")=='1';samples_report_seen=false;open_occlusion=OpenOcclusion{};occlusion_queries_started=0;occlusion_batch_enabled=marker("/gfx-query-per-draw")!='1' && marker("/gfx-no-query-batch")<0;heavy_timestamps=marker("/gfx-heavy-timestamps")=='1';xbg_logf("NVN persistent framebuffers=%d slot command pools=%d cached readback=%d texel memo=%d (markers gfx-no-persistent-fb, gfx-no-slot-pools, gfx-readback-cached, gfx-no-texel-memo)",int(persistent_fb_enabled),int(slot_pools_enabled),int(readback_cached),int(texel_memo_enabled));}{FILE *w=fopen(((cut==std::string::npos?dir:dir.substr(0,cut))+"/gfx-wtrack").c_str(),"rb");wtrack::marker=-1;if(w){wtrack::marker=fgetc(w)=='1'?1:0;fclose(w);}wtrack::enabled=wtrack::marker==1;}{FILE *w=fopen(((cut==std::string::npos?dir:dir.substr(0,cut))+"/gfx-no-wtrack").c_str(),"rb");if(w){wtrack::enabled=false;wtrack::marker=0;fclose(w);}xbg_logf("NVN wtrack enabled=%d (markers gfx-no-wtrack, gfx-wtrack=0)",int(wtrack::enabled));}{FILE *w=fopen(((cut==std::string::npos?dir:dir.substr(0,cut))+"/gfx-mutable-images").c_str(),"rb");no_mutable_images=true;if(w){no_mutable_images=fgetc(w)!='1';fclose(w);}xbg_logf("NVN mutable-format images=%d (marker gfx-mutable-images)",int(!no_mutable_images));}{FILE *w=fopen(((cut==std::string::npos?dir:dir.substr(0,cut))+"/gfx-mutable-test").c_str(),"rb");mutable_test=0;if(w){if(fscanf(w,"%u",&mutable_test)!=1)mutable_test=0;fclose(w);}if(mutable_test)xbg_logf("NVN mutable upgrade test every %u images (marker gfx-mutable-test)",mutable_test);}
@@ -4209,11 +4284,7 @@ extern "C" int xbg_game_initialize(const xbg_game_config *c,char *error,size_t b
       format_feature_flags2=properties.apiVersion>=VK_API_VERSION_1_3;for(auto &e:ext)if(!strcmp(e.extensionName,VK_KHR_FORMAT_FEATURE_FLAGS_2_EXTENSION_NAME))format_feature_flags2=true;
       xbg_logf("NVN format-feature-flags2=%d (formatless storage checks %s)",int(format_feature_flags2),format_feature_flags2?"per format":"by the pre-1.3 format list");
       capability_report();
-      {const VkFormatProperties &d16=format_properties(VK_FORMAT_D16_UNORM),&d24=format_properties(VK_FORMAT_X8_D24_UNORM_PACK32);
-       const VkFormatFeatureFlags d24_needs=VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT|VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT|VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT|VK_FORMAT_FEATURE_TRANSFER_SRC_BIT|VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
-       bool d16_linear=(d16.optimalTilingFeatures&VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)!=0;depth16_as_d24=!d16_linear && (d24.optimalTilingFeatures&d24_needs)==d24_needs;
-       xbg_logf("NVN depth16 stored as %s (D16 linear filtering=%u, X8_D24 features=%#x)",depth16_as_d24?"X8_D24":"D16",unsigned(d16_linear),d24.optimalTilingFeatures);
-       xbg_logf("NVN compatibility format_feature_flags2=%d depth16_as_d24=%d",int(format_feature_flags2),int(depth16_as_d24));}
+      xbg_logf("NVN compatibility format_feature_flags2=%d depth16_as_d24=%d depth24_as_d32=%d",int(format_feature_flags2),int(depth16_as_d24),int(depth24_as_d32));
       for(size_t at=0;at<list.size();at+=900)xbg_logf("NVN caps extensions[%zu] %s",at/900,list.substr(at,900).c_str());
       xbg_logf("NVN caps api=%u.%u.%u driver=%u maxUBdyn=%u maxPerStageUB=%u minUBAlign=%llu maxBoundSets=%u",VK_API_VERSION_MAJOR(properties.apiVersion),VK_API_VERSION_MINOR(properties.apiVersion),VK_API_VERSION_PATCH(properties.apiVersion),properties.driverVersion,properties.limits.maxDescriptorSetUniformBuffersDynamic,properties.limits.maxPerStageDescriptorUniformBuffers,(unsigned long long)properties.limits.minUniformBufferOffsetAlignment,properties.limits.maxBoundDescriptorSets);}
      {FILE *m=fopen(((cut==std::string::npos?dir:dir.substr(0,cut))+"/gfx-ab-toggle").c_str(),"rb");ab_period=0;if(m){if(fscanf(m,"%d",&ab_period)!=1)ab_period=0;fclose(m);}{FILE *t=fopen(((cut==std::string::npos?dir:dir.substr(0,cut))+"/gfx-ab-target").c_str(),"rb");memset(ab_target,0,sizeof ab_target);if(t){if(fscanf(t,"%15s",ab_target)!=1)ab_target[0]=0;fclose(t);}}xbg_logf("NVN PERF ab_period=%d",ab_period);}
