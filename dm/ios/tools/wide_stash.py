@@ -73,16 +73,17 @@ def rune_craft(s):
     rows = []
     for i in range(32):
         col, row = i // 16, i % 16
-        y = 100 + row * 84
-        xt = 1200 + col * 278
-        xb = 1322 + col * 278
-        rows.append('                    { "type": "TextBoxWidget", "name": "TouchRcText%d", "fields": { "rect": { "x": %d, "y": %d, "width": 122, "height": 44 }, "text": "", "style": "$StyleGoldAmount", "scale": 0.62 } },\n' % (i, xt, y))
-        rows.append('                    { "type": "ButtonWidget", "name": "TouchRcRow%d", "fields": { "rect": { "x": %d, "y": %d, "width": 140, "height": 44 }, "filename": "PANEL/TooltipBorder/TooltipBorder", "tileScale": 0.12, "textString": "@dmRcMake", "textColor": "$LightButtonTextColor", "text/style": "$StyleFEButtonText", "onClickMessage": "PanelManager:ClosePanel:TouchRcRow%d" } },\n' % (i, xb, y, i))
+        y = 110 + row * 84
+        x = 1140 + col * 260          # 每列 210 宽：「18# ×14」这种两位号+两位数量也不溢出 | 210 wide per column so 「18# ×14」(two-digit rune and count) still fits
+        # 文字底下的边框底纹（九宫格深色半透），点击目标是上面那层文字控件 TouchRcRow<i>
+        # Bordered backing under the text (nine-tile, dark, translucent); the click target is the text widget TouchRcRow<i> on top
+        rows.append('                    { "type": "NineTileImageWidget", "name": "TouchRcRowBg%d", "fields": { "rect": { "x": %d, "y": %d, "width": 240, "height": 60 }, "filename": "PANEL/TooltipBorder/TooltipBorder", "backgroundColor": [0.0, 0.0, 0.0, 0.38], "tileScale": 0.12 } },\n' % (i, x, y - 8))
+        rows.append('                    { "type": "TextBoxWidget", "name": "TouchRcRow%d", "fields": { "rect": { "x": %d, "y": %d, "width": 240, "height": 44 }, "text": "", "style": "$StyleGoldAmount", "scale": 0.62 } },\n' % (i, x + 10, y))
     box = ('\n                { "type": "Widget", "name": "TouchRuneCraftBox", "children": [\n'
-           '                    { "type": "ButtonWidget", "name": "TouchRuneCraft", "fields": { "rect": { "x": 841, "y": 1121, "width": 200, "height": 80 }, "filename": "PANEL/TooltipBorder/TooltipBorder", "tileScale": 0.18, "textString": "@dmRuneCraft", "textColor": "$LightButtonTextColor", "text/style": "$StyleFEButtonText", "onClickMessage": "PanelManager:ClosePanel:TouchRuneCraft" } },\n'
+           '                    { "type": "NineTileImageWidget", "name": "TouchRcEntryBg", "fields": { "rect": { "x": 791, "y": 1211, "width": 240, "height": 60 }, "filename": "PANEL/TooltipBorder/TooltipBorder", "backgroundColor": [0.0, 0.0, 0.0, 0.38], "tileScale": 0.12 } },\n                    { "type": "ButtonWidget", "name": "TouchRuneCraft", "fields": { "rect": { "x": 811, "y": 1201, "width": 200, "height": 80 }, "textString": "@dmRuneCraft", "textColor": "$LightButtonTextColor", "text/style": "$StyleFEButtonText", "onClickMessage": "PanelManager:ClosePanel:TouchRuneCraft" } },\n'
            '                    { "type": "Widget", "name": "TouchRcPanel", "children": [\n'
-           '                        { "type": "NineTileImageWidget", "name": "TouchRcBg", "fields": { "rect": { "x": 1189, "y": 29, "width": 575, "height": 1457 }, "filename": "PANEL/TooltipBorder/TooltipBorder", "backgroundColor": [0.0, 0.0, 0.0, 0.88], "tileScale": 1.0 } },\n'
-           '                        { "type": "TextBoxWidget", "name": "TouchRcTitle", "fields": { "rect": { "x": 1200, "y": 40, "width": 540, "height": 50 }, "text": "@dmRuneCraft", "style": "$StyleGoldAmount", "scale": 0.78 } },\n'
+           '                        { "type": "NineTileImageWidget", "name": "TouchRcBg", "fields": { "rect": { "x": 1120, "y": 29, "width": 560, "height": 1457 }, "filename": "PANEL/TooltipBorder/TooltipBorder", "backgroundColor": [0.0, 0.0, 0.0, 0.88], "tileScale": 1.0 } },\n'
+           '                        { "type": "TextBoxWidget", "name": "TouchRcTitle", "fields": { "rect": { "x": 1140, "y": 44, "width": 400, "height": 50 }, "text": "@dmRuneCraft", "style": "$StyleGoldAmount", "scale": 0.78 } },\n'
            + ''.join(rows) +
            '                    ] }\n'
            '                ] },\n')

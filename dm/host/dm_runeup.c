@@ -275,6 +275,13 @@ static int cube_others(uint8_t *b, uint64_t pl) {   // 魔盒里非符文 / 非�
         it = *(uint64_t *)(d + 0xb0); }
     return n;
 }
+static uint64_t cube_item_of_cls(uint8_t *b, uint64_t pl, int cls) {   // 魔盒里这类号的那一件（搬回背包用） | the one item of this class inside the cube (used to move it back out)
+    uint64_t it = first_item(pl);
+    for (int c = 0; it && c < 400; c++) { uint64_t d = *(uint64_t *)(it + 0x10); if (!d) break;
+        if (PAGE(d) == PG_CUBE && (int)*(uint32_t *)(it + 4) == cls) return it;
+        it = *(uint64_t *)(d + 0xb0); }
+    (void)b; return 0;
+}
 static int cube_of_cls(uint8_t *b, uint64_t pl, int cls) {   // 魔盒里这类号有几件 | how many of this class the cube holds
     int n = 0; uint64_t it = first_item(pl);
     for (int c = 0; it && c < 400; c++) { uint64_t d = *(uint64_t *)(it + 0x10); if (!d) break;
@@ -406,7 +413,10 @@ void dm_runeup_pump(void) {
         if (cube_of_cls(b, pl, g_cls_rune[g_up.m]) < 1) return;
         LOG("符文升级：造出 1 颗 %d 号（魔盒里 %d 颗）", g_up.m, cube_of_cls(b, pl, g_cls_rune[g_up.m]));
         inv_t v; scan_inv(b, pl, &v);
-        if (v.rune[g_up.to] >= 1) { LOG("符文升级：%d 号到手，收工", g_up.to); g_up.st = 0;
+        if (v.rune[g_up.to] >= 1) { LOG("符文升级：%d 号到手，收工", g_up.to);
+            // 产物：0x19 拿到光标 → 收进背包 → 交给自动收（储藏箱旁直接进珍宝匣的符文页）
+            // Product: 0x19 onto the cursor -> into the inventory -> auto-stow (straight into the trove's rune page at the stash)
+            g_up.st = 8; g_up.wait = 0;
             { char rn[64] = ""; rune_name(b, tables(b, cube_it), g_up.to, rn, sizeof rn); char line[200]; snprintf(line, sizeof line, "符文合成完成：%s", rn); dm_pouch_notice(line); } return; }
         plan_t p; if (make_plan(b, tables(b, cube_it), g_up.to, &p)) { up_fail("材料不够了"); return; }
         int next = 0; for (int i = 2; i <= g_up.to; i++) if (p.craft[i] > 0) { next = i; break; }
@@ -417,6 +427,39 @@ void dm_runeup_pump(void) {
         return;
     }
 
+    if (g_up.st == 8) {   // 产物从魔盒拿到光标 | pick the product out of the cube onto the cursor
+        if (++g_up.wait < 4) return;
+        uint64_t prod = cube_item_of_cls(b, pl, g_cls_rune[g_up.to]);
+        if (!prod) { LOG("【红】符文升级：魔盒里找不到产物 %d 号", g_up.to); g_up.st = 0; return; }
+        uint64_t pp = *(uint64_t *)(prod + 0x38);
+        int x = pp ? *(int32_t *)(pp + 0x10) : 0, y = pp ? *(int32_t *)(pp + 0x14) : 0;
+        uint32_t id = *(uint32_t *)(prod + 8);
+        uint8_t p[17]; memset(p, 0, sizeof p); p[0] = 0x19;
+        uint32_t v[4] = { id, (uint32_t)x, (uint32_t)y, (uint32_t)PG_CUBE }; memcpy(p + 1, v, 16); send_pkt(b, p, 17);
+        LOG("符文升级：产物 %d 号（id %u，%d,%d 页 %d）拿到光标", g_up.to, id, x, y, PG_CUBE);
+        g_up.st = 9; g_up.wait = 0; return;
+    }
+    if (g_up.st == 9) {   // 光标那件收进背包（原版「手上有物品按返回」那一步） | stow the cursor item into the inventory (what the original game does on Back while holding an item)
+        void dm_held_stow(void); int dm_held_stow_result(void);
+        if (g_up.wait == 0) { dm_held_stow(); g_up.wait = 1; return; }
+        int r = dm_held_stow_result();
+        if (r < 0) { if (++g_up.wait > 240) { LOG("【红】符文升级：产物 %d 号收不进背包（超时）", g_up.to); g_up.st = 0; } return; }
+        if (r == 0) { LOG("【红】符文升级：产物 %d 号收不进背包（背包满？）", g_up.to); g_up.st = 0; return; }
+        LOG("符文升级：产物 %d 号已收进背包", g_up.to); g_up.st = 10; g_up.wait = 0; return;
+    }
+    if (g_up.st == 10) {   // 产物已在背包：缺省就停在这（玩家双击一下进珍宝匣）；DM_RUNE_ABSORB=1 才自动走 0x63
+        // The product is in the bag: stop here by default (the player double-taps it into the trove); only with
+        // DM_RUNE_ABSORB=1 does it go through 0x63 automatically -- that call crashed the game once
+        // (Break at dm_pouch_srv_tick+0x620 right after handing the fresh item to move-to-stash), so it is off by default
+        static int absorb_on = -1; if (absorb_on < 0) { const char *e = getenv("DM_RUNE_ABSORB"); absorb_on = e && *e && strcmp(e, "0") != 0; }
+        if (!absorb_on) { LOG("符文升级：%d 号产物已放进背包（双击进珍宝匣）", g_up.to); g_up.st = 0; return; }
+        void dm_pouch_absorb(uint32_t id);
+        if (++g_up.wait < 6) return;
+        uint64_t prod = bag_item_of_cls(b, pl, g_cls_rune[g_up.to]);
+        if (prod) { uint32_t id = *(uint32_t *)(prod + 8); dm_pouch_absorb(id); LOG("符文升级：%d 号产物（id %u）交给自动收 → 珍宝匣", g_up.to, id); g_up.st = 0; return; }
+        if (g_up.wait > 240) { LOG("【红】符文升级：产物 %d 号没回到背包（4 秒）", g_up.to); g_up.st = 0; }
+        return;
+    }
     g_up.st = 0;
 }
 

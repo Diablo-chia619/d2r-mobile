@@ -1085,6 +1085,36 @@ void dm_runeword_button(const char *name);   // 清单里点中的控件（名�
 // （同层后画的在上：按钮 / 详情框压在底板上，两个都中时取后面那个）
 // Runeword list (its widgets are all in the TouchRwBox container under the inventory panel, name prefix TouchRw): which visible widget is hit. Returns 0 = not on the list, 1 = on the list, *btn = name of the topmost widget hit
 // (within a layer later-drawn is on top: buttons / the detail box sit on the backing, and when both are hit the later one is taken)
+// 符文合成弹框（控件在 TouchRcPanel 里，名字前缀 TouchRc）：点中哪个可见控件（后画的在上）
+// Rune-craft popup (widgets live in TouchRcPanel, name prefix TouchRc): which visible widget is hit (later-drawn on top)
+static int rc_hit(uint64_t w, uint64_t xy, int dep, const char **btn) {
+    if (!w || dep > 6 || !*(uint8_t *)(w + 0x50)) return 0; const char *nm = *(uint64_t *)(w + 8) ? (const char *)*(uint64_t *)(w + 8) : "";
+    int r = 0; if (!strncmp(nm, "TouchRc", 7) && strlen(nm) > 7 && (((int (*)(uint64_t, uint64_t))*(uint64_t *)(*(uint64_t *)w + 0x48))(w, xy) & 1)) { *btn = nm; r = 1; }
+    uint64_t ch = *(uint64_t *)(w + 0x58), n = *(uint64_t *)(w + 0x60); if (!ch || n > 256) return r;
+    for (uint64_t i = 0; i < n; i++) if (rc_hit(*(uint64_t *)(ch + 8 * i), xy, dep + 1, btn)) r = 1;
+    return r;
+}
+// 符文合成弹框开着时把这一下吃掉（鼠标 / 触屏两条路都调它）：点中某一行就合成，点底板只吃掉，
+// 点弹框外关掉。返回 1 = 已处理，调用方不要再把点击发给游戏（会点走下面的符文格）。
+// While the rune-craft popup is open, swallow the tap here (called from both the mouse and the touch paths):
+// a tap on a row crafts, a tap on the backing is swallowed, a tap outside closes the popup. Returns 1 when it
+// was handled and the caller must not send the click on to the game (it would move runes underneath).
+static int rc_take_tap(uint64_t root, int x, int y) {
+    int dm_rc_open(void); void dm_pouch_rc_tap(const char *); void dm_rc_close(void);
+    if (!dm_rc_open() || !root) return 0;
+    { static int lg; if (lg++ < 30) LOG("符文合成：弹框吃掉这次点击 (%d,%d)", x, y); }
+    uint64_t xy = (uint64_t)(uint32_t)x | ((uint64_t)(uint32_t)y << 32);
+    uint64_t panel = ui_find(root, "TouchRcPanel", 0); const char *bn = NULL;
+    int r = panel ? rc_hit(panel, xy, 1, &bn) : 0;
+    if (r && bn) { int row = !strncmp(bn, "TouchRcRow", 10) && strncmp(bn + 10, "Bg", 2);
+        { static int lr; if (lr++ < 60) LOG("符文合成：弹框吃掉点击 (%d,%d) → 控件 %s%s", x, y, bn, row ? "（行，开始合成）" : "（不是行，只吃掉）"); }
+        if (row) dm_pouch_rc_tap(bn); return 1; }
+    uint64_t bgw = panel ? ui_find(panel, "TouchRcBg", 0) : 0;
+    if (bgw && (((int (*)(uint64_t, uint64_t))*(uint64_t *)(*(uint64_t *)bgw + 0x48))(bgw, xy) & 1)) {
+        { static int lb; if (lb++ < 60) LOG("符文合成：弹框吃掉点击 (%d,%d) → 底板，只吃掉", x, y); } return 1; }
+    { static int lo; if (lo++ < 60) LOG("符文合成：弹框外点 (%d,%d) → 关弹框", x, y); }
+    dm_rc_close(); return 1;
+}
 static int rw_hit(uint64_t w, uint64_t xy, int dep, const char **btn) {
     if (!w || dep > 5 || !*(uint8_t *)(w + 0x50)) return 0; const char *nm = *(uint64_t *)(w + 8) ? (const char *)*(uint64_t *)(w + 8) : "";
     int r = 0; if (!strncmp(nm, "TouchRw", 7) && (((int (*)(uint64_t, uint64_t))*(uint64_t *)(*(uint64_t *)w + 0x48))(w, xy) & 1)) { *btn = nm; r = 1; }
@@ -1167,6 +1197,16 @@ static int ui_classify(module_t *m, uint64_t root, int x, int y, char *hit, size
         const char *bn = NULL; int rw = rw_hit(ui_find(root, "PlayerInventoryExpansionLayout", 0), (uint64_t)(uint32_t)x | ((uint64_t)(uint32_t)y << 32), 1, &bn);
         if (rw && bn) { dm_runeword_button(bn); snprintf(hit, hn, "符文之语清单 %s（宿主处理，不发鼠标点击）", bn); return 6; }
         if (!rw) { dm_runeword_list_close(); snprintf(hit, hn, "符文之语清单外 → 关清单"); return 6; } }
+    { int dm_rc_open(void); void dm_pouch_rc_tap(const char *); void dm_rc_close(void);
+      if (dm_rc_open()) {   // 符文合成弹框开着：一律吃掉，绝不让点击穿到下面的符文格（用户实测穿透会点走符文）
+          // Rune-craft popup open: swallow every tap, never let it leak to the rune cells underneath (measured: a leak moved runes)
+          uint64_t xy = (uint64_t)(uint32_t)x | ((uint64_t)(uint32_t)y << 32);
+          uint64_t panel = ui_find(root, "TouchRcPanel", 0); const char *bn = NULL;
+          int r = panel ? rc_hit(panel, xy, 1, &bn) : 0;
+          if (r && bn) { if (!strncmp(bn, "TouchRcRow", 10) && strncmp(bn + 10, "Bg", 2)) dm_pouch_rc_tap(bn); snprintf(hit, hn, "符文合成弹框 %s（宿主处理）", bn); return 6; }
+          uint64_t bgw = panel ? ui_find(panel, "TouchRcBg", 0) : 0;
+          if (bgw && (((int (*)(uint64_t, uint64_t))*(uint64_t *)(*(uint64_t *)bgw + 0x48))(bgw, xy) & 1)) { snprintf(hit, hn, "符文合成弹框底板（吃掉）"); return 6; }
+          dm_rc_close(); snprintf(hit, hn, "符文合成弹框外 → 关弹框"); return 6; } }
     if (swaptab_hit(root, x, y)) { atomic_store(&g_swaptab_tap, 1); snprintf(hit, hn, "技能树 I / II 页签 → 换武器"); return 6; }   // 吃掉这一下，不发鼠标点击 | Swallow this tap, no mouse click sent
     { uint64_t bk = ui_panel(root, "BankExpansionLayout"), tabs = bk && *(uint8_t *)(bk + 0x50) ? ui_find(bk, "BankTabs", 0) : 0;   // 个人页（页签 0）上的左右箭头 = 翻个人仓库页（dm_pages.c）；共享页照旧交给游戏；第六页「编年史」不用这两个原版箭头（被盖板压着，翻页条是它自己的控件，点按在 dm_vault_ui_tap 里收） | The left / right arrows on the personal page (tab 0) = turn personal stash pages (dm_pages.c); shared pages are left to the game as before; the sixth page 「编年史」(Chronicle) does not use these two original arrows (they are under the cover; the page bar is its own widget, and taps are handled in dm_vault_ui_tap)
       if (tabs && TAB_SEL(tabs) == 0) for (int k = 0; k < 2; k++) { uint64_t t = ui_find(bk, k ? "TouchStashRight" : "TouchStashLeft", 0);
@@ -3025,6 +3065,7 @@ void dm_ui_mouse_pump(void) {   // 游戏取手柄处调（hle_hid fill，主线
     // (iOS app on the Mac: tapping 「选项」(Options) in the pause menu → the whole panel got closed. It was not exposed before because the controller cursor had gone there first)
     static uint64_t snapped;   // 这次点按已吸附过的位置（吸附后 g_ut_xy 改成可点控件上的点，再悬停、按下） | the position this tap has already been snapped at (after snapping, g_ut_xy is changed to a point on the clickable widget, then hover, then press)
     if (ph == 2 && r != snapped && (dm_ui_panel_state() & DM_PS_VAULT) && ({ int dm_vault_ui_blocks(int, int); dm_vault_ui_blocks(x, y); })) snapped = r;   // 编年史页自己收的点（格子、部位页签、空处）不吸附：原先点部位页签被吸到旁边的搜索框上 | taps the chronicle page handles itself (cells, slot tabs, empty space) are not snapped: previously a tap on a slot tab got snapped onto the search box next to it
+    if (ph == 2 && rc_take_tap(root, x, y)) { g_ut_phase = 0; return; }
     if (ph == 2 && r != snapped) { int sx = x, sy = y, sn = ui_snap(m, root, &sx, &sy);
         if (sn == 6) { atomic_store(&g_ut_phase, 0); static int l6; if (l6++ < 40) LOG("界面鼠标：(%d,%d) 压着被上层面板盖住的按钮，不点", x, y); return; }
         if (sn == 2) { static int lg; if (lg++ < 40) LOG("界面鼠标：(%d,%d) 就近吸附到 (%d,%d)", x, y, sx, sy);

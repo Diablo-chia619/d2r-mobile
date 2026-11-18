@@ -325,7 +325,9 @@ void dm_pouch_c2s(uint64_t *regs) {   // regs：x0 游戏、x1 玩家、x2 包�
 // ---- Main thread -> server tick: item ids to stow (single-writer single-reader ring), stash open, whether next to the stash
 static _Atomic uint32_t g_absq[64]; static _Atomic unsigned g_absw, g_absr;
 static _Atomic int g_stash_open, g_near_pub;
-static void absorb_push(uint32_t id) { unsigned w = atomic_load(&g_absw); if (w - atomic_load(&g_absr) >= 64) return; atomic_store(&g_absq[w % 64], id); atomic_store(&g_absw, w + 1); }
+static void absorb_push(uint32_t id) { unsigned w = atomic_load(&g_absw); if (w - atomic_load(&g_absr) >= 64) return; atomic_store(&g_absq[w % 64], id); atomic_store(&g_absw, w + 1); }
+void dm_pouch_absorb(uint32_t id) {   // 别的模块把物品交给自动收（符文合成产物回珍宝匣） | let another module hand an item to auto-stow (rune-craft products back into the trove)
+    absorb_push(id); }
 
 // ---- 自动收：地上的符文 / 宝石记下 id → 自动捡（18 号以内符文、全部宝石，PICK_R 格内）→ 凡是记过的 id 进了背包就交服务端收
 // ---- Auto stow: record the ids of runes / gems on the ground -> auto pick up (runes up to No. 18, all gems, within PICK_R tiles) -> any recorded id that enters the inventory is handed to the server to stow
@@ -491,7 +493,7 @@ static uint64_t find_w(uint64_t w, const char *name, int dep) {
     return 0;
 }
 static int ours(uint64_t w) { const char *nm = w ? (const char *)*(uint64_t *)(w + 8) : NULL;   // 我们的控件：TouchPouch* / TouchRejuv* / TouchStore*（挡住 0x20ba4c8 虚表的别的文字控件）
-    return nm && (!strncmp(nm, "TouchPouch", 10) || !strncmp(nm, "TouchRejuv", 10) || !strncmp(nm, "TouchStore", 10) || !strncmp(nm, "TouchRc", 7) || !strncmp(nm, "TouchRuneCraft", 14)); }
+    return nm && (!strncmp(nm, "TouchPouch", 10) || !strncmp(nm, "TouchRejuv", 10) || !strncmp(nm, "TouchStore", 10) || !strncmp(nm, "TouchRc", 7) || !strncmp(nm, "TouchRuneCraft", 14) || !strncmp(nm, "TouchHat", 8)); }
 static void w_move(uint64_t w, int x, int y) { if (!ours(w)) return; int32_t *r = (int32_t *)(w + 0x70); if (r[0] == x && r[1] == y) return; r[0] = x; r[1] = y; ((void (*)(uint64_t))*(uint64_t *)(*(uint64_t *)w + 0x10))(w); }
 static void w_text(uint64_t w, const char *s) {   // 文字控件改字（虚表 main+0x20ba4c8，串 +0x88 / 长 +0x90，改完 0xadc434 重排；同 dm_vault_ui.c vu_text） | Change a text widget's text (vtable main+0x20ba4c8, string +0x88 / length +0x90, re-layout with 0xadc434 after changing; same as vu_text in dm_vault_ui.c)
     if (!ours(w) || *(uint64_t *)w - (uint64_t)(uintptr_t)B != 0x20ba4c8) return; size_t n = strlen(s);
@@ -513,18 +515,24 @@ static void rc_show(uint64_t root, int on) {
     uint64_t vt = *(uint64_t *)root;
     if (!vt || vt < 0x10000 || vt > 0x7fff00000000ULL) return;
     uint64_t bg = find_w(root, "TouchRcBg", 1), title = find_w(root, "TouchRcTitle", 1), close = find_w(root, "TouchRcClose", 1);
-    for (int i = 0; i < 32; i++) { char nm[24]; snprintf(nm, sizeof nm, "TouchRcText%d", i); w_move(find_w(root, nm, 1), 99999, 0);
+    for (int i = 0; i < 32; i++) { char nm[24]; snprintf(nm, sizeof nm, "TouchRcRowBg%d", i); w_move(find_w(root, nm, 1), 99999, 0);
         snprintf(nm, sizeof nm, "TouchRcRow%d", i); w_move(find_w(root, nm, 1), 99999, 0); }
     if (!on) { w_move(bg, 99999, 0); w_move(title, 99999, 0); w_move(close, 99999, 0); g_rc = 0; return; }
     int dm_runeup_list(int *, int *, int); int nos[32], cnts[32];
     int n = dm_runeup_list(nos, cnts, 32); g_rc_n = n; for (int i = 0; i < n; i++) g_rc_no[i] = nos[i];
     for (int i = 0; i < n; i++) {   // 两列：前 16 行在左列，之后在右列 | two columns: first 16 rows on the left, the rest on the right
-        int col = i / 16, row = i % 16, y = 100 + row * 84;
+        int col = i / 16, row = i % 16, y = 110 + row * 84, x = 1140 + col * 260;
         char nm[24], line[64];
-        snprintf(nm, sizeof nm, "TouchRcText%d", i); snprintf(line, sizeof line, "%d# ×%d", nos[i], cnts[i]); w_text(find_w(root, nm, 1), line);
-        w_move(find_w(root, nm, 1), 1200 + col * 278, y);
-        snprintf(nm, sizeof nm, "TouchRcRow%d", i); w_move(find_w(root, nm, 1), 1322 + col * 278, y); }
-    w_move(bg, 1189, 29); w_move(title, 1200, 40);
+        // 文字本身就是点击目标（TouchRcRow<i>），底下垫一层边框底纹（TouchRcRowBg<i>）；不再单出「合成」按钮
+        // The text itself is the click target (TouchRcRow<i>), with a bordered backing under it (TouchRcRowBg<i>); no separate Craft button any more
+        snprintf(nm, sizeof nm, "TouchRcRowBg%d", i); w_move(find_w(root, nm, 1), x, y - 8);
+        snprintf(nm, sizeof nm, "TouchRcRow%d", i); snprintf(line, sizeof line, "%d# ×%d", nos[i], cnts[i]); w_text(find_w(root, nm, 1), line);
+        w_move(find_w(root, nm, 1), x + 10, y); }
+    w_move(bg, 1120, 29); w_move(title, 1140, 44);
+    // 把光标挪到画面左缘：不然它停在刚才点的地方（物品格上），原版说明框会盖在弹框上
+    // Park the cursor at the left edge of the screen: otherwise it stays where it was tapped (on an item cell) and
+    // the original item tooltip covers the popup.
+    { int dm_ui_mouse_hover_now(float, float); int dm_padmode_current(void); if (!dm_padmode_current()) dm_ui_mouse_hover_now(0.02f, 0.5f); }
     g_rc = 1; LOG("符文合成：弹框开了，%d 行", n);
 }
 static int g_rc_init;
@@ -578,6 +586,22 @@ static void ui_pump(void) {
     if (g_tip) tip_show(root, 1);   // 文字控件量尺寸要晚一两帧（fitToText）：开着时每帧对齐 | Text widgets measure their size a frame or two late (fitToText): align every frame while open
 }
 
+// 点符文合成弹框里的一行：宿主交互层直接调（触摸被吃掉，不发鼠标点击，免得落到下面的符文格上）
+// Tap one row of the rune-craft popup: called straight from the interaction layer (the touch is swallowed and no
+// mouse click is sent, so it cannot land on the rune cells underneath)
+void dm_pouch_rc_tap(const char *arg) {
+    if (!B || !arg) return;
+    int i = atoi(arg + 10); uint64_t root = *(uint64_t *)(B + 0x2f05458);
+    int no = (i >= 0 && i < g_rc_n && i < 32) ? g_rc_no[i] : 0;
+    if (no > 0) { char why[200] = ""; int r = dm_runeup_start(no, why, sizeof why);
+        LOG("%s符文合成：点第 %d 行 → %d 号 %s", r ? "【红】" : "", i + 1, no, r ? why : "开始");
+        snprintf(g_notice, sizeof g_notice, r ? "符文合成没开始：%s" : "开始合成 %d 号", r ? why : no); atomic_store(&g_notice_req, 1); }
+    if (*(uint8_t *)(B + 0x2d5ff60)) rc_show(root, 0);   // 面板还开着才收弹框 | close the popup only while the panel is still there
+}
+int dm_rc_open(void) { return g_rc; }   // 弹框开着？交互层用 | popup open? used by the interaction layer
+void dm_rc_close(void) { if (B) { uint64_t root = *(uint64_t *)(B + 0x2f05458); if (root) rc_show(root, 0); } }
+static void hat_toggle(void);   // 定义在后面（帽子显隐） | defined further down (helmet show/hide)
+
 void dm_pouch_on_uimsg(const char *cat, const char *act, const char *arg) {   // 界面消息回调（diag.c）：我们的两个按钮发 ClosePanel:TouchPouch / TouchStore | UI message callback (diag.c): our two buttons send ClosePanel:TouchPouch / TouchStore
     if (!cat || !act || !arg || strcmp(cat, "PanelManager") || strcmp(act, "ClosePanel")) return;
     if (!strcmp(arg, "TouchPouch")) atomic_store(&g_pouch_tap, 1);
@@ -586,22 +610,97 @@ void dm_pouch_on_uimsg(const char *cat, const char *act, const char *arg) {   //
         LOG("符文合成：点了按钮（弹框现在 %s）", g_rc ? "开着 → 关" : "关着 → 开");
         rc_show(root, !g_rc); return; }
     if (!strcmp(arg, "TouchRcClose")) { uint64_t root = *(uint64_t *)(B + 0x2f05458); rc_show(root, 0); LOG("符文合成：关了弹框（点了关闭）"); return; }
-    if (!strncmp(arg, "TouchRcRow", 10)) {   // 点某一行 → 合一个那一号 | a row was tapped -> craft one of that rune
-        int i = atoi(arg + 10); uint64_t root = *(uint64_t *)(B + 0x2f05458);
-        int no = (i >= 0 && i < g_rc_n && i < 32) ? g_rc_no[i] : 0;
-        if (no > 0) { char why[200] = ""; int r = dm_runeup_start(no, why, sizeof why);
-            LOG("%s符文合成：点第 %d 行 → %d 号 %s", r ? "【红】" : "", i + 1, no, r ? why : "开始");
-            snprintf(g_notice, sizeof g_notice, r ? "符文合成没开始：%s" : "开始合成 %d 号", r ? why : no); atomic_store(&g_notice_req, 1); }
-        // 面板已经关了就别再去收弹框：那时 root 的子树已释放，虚表校验都可能骗过去。
-        // Skip closing the popup when the panel is already gone: its subtree is freed, and even the vtable check can lie.
-        if (*(uint8_t *)(B + 0x2d5ff60)) rc_show(root, 0); return; }
+    if (!strncmp(arg, "TouchRcRow", 10) && strncmp(arg + 10, "Bg", 2)) { dm_pouch_rc_tap(arg); return; }   // 点某一行 → 合一个那一号 | a row was tapped -> craft one of that rune
     else if (!strcmp(arg, "TouchStore") || !strcmp(arg, "TouchPadStore")) atomic_store(&g_store_req, 1);   // TouchPadStore = 手柄版暂停菜单的「存放」行（touch_layout.py pad_pause） | TouchPadStore = the "Deposit" row of the controller pause menu (touch_layout.py pad_pause)
+    else if (!strcmp(arg, "TouchHat")) hat_toggle();   // 物品栏「帽子」开关 | the 「帽子」 (helmet) switch in the inventory
     else if (!strcmp(arg, "TouchRejuvS")) atomic_store(&g_rejuv_req, 1);   // 小紫框：从囊里取一瓶补到腰带 | small rejuv box: take one from the pouch and top up the belt
     else if (!strcmp(arg, "TouchRejuvL")) atomic_store(&g_rejuv_req, 2);   // 大紫框 | full rejuv box
 }
+// ---- 帽子显隐探针（临时，环境变量 DM_HAT_PROBE=1 才开）：把客户端本地玩家单位的字节和身上装备列一张表写进文件。
+//      戴着 / 摘掉头盔各 dump 一次，diff 就能看出头盔在模型里是从哪一处读的。
+// ---- Helmet-hide probe (temporary, enabled by DM_HAT_PROBE=1): dumps the client local player unit bytes plus the equipped
+//      item list into a file. Dump once with the helmet on and once with it off -- the diff shows where the model reads it.
+static void hat_probe(uint8_t *b) {
+    static int on = -1, n; if (on < 0) on = getenv("DM_HAT_PROBE") ? 1 : 0;
+    if (!on || n >= 400) return;
+    static uint64_t last; uint64_t dm_guest_frame(void); uint64_t f = dm_guest_frame();
+    if (f - last < 60) return; last = f;
+    uint32_t slot = 8, lid = 0xffffffffu;
+    memcpy(&slot, b + 0x2d20e4c, 4); if (slot >= 8) return;
+    memcpy(&lid, b + 0x2d60380 + 4 * slot, 4); if (lid == 0xffffffffu) return;
+    uint64_t u = 0;
+    for (uint64_t x = *(uint64_t *)(b + 0x2d603a0 + 8 * (lid & 0x7f)); x && !u; x = *(uint64_t *)(x + 0x158))
+        if (*(uint32_t *)(x + 8) == lid && *(uint32_t *)x == 0) u = x;
+    if (!u) return;
+    const char *pp = getenv("DM_HAT_DUMP"); char path[512];
+    snprintf(path, sizeof path, "%s", (pp && *pp) ? pp : "hat_dump.txt");
+    FILE *fp = fopen(path, "ab"); if (!fp) return; n++;
+    fprintf(fp, "=== dump %d frame %llu lid=%u unit=0x%llx\n", n, (unsigned long long)f, lid, (unsigned long long)u);
+    for (int i = 0; i < 0x200; i += 16) { fprintf(fp, "%04x:", i);
+        for (int j = 0; j < 16; j++) fprintf(fp, " %02x", *(uint8_t *)(u + i + j)); fprintf(fp, "\n"); }
+    uint64_t iv = *(uint64_t *)(u + 0x90);
+    if (iv && *(uint32_t *)iv == 0x01020304)
+        for (uint64_t x = *(uint64_t *)(iv + 0x10), k = 0; x && k < 64; k++) { uint64_t d = *(uint64_t *)(x + 0x10); if (!d) break;
+            uint32_t cw = item_code(x); char cs[8] = {0}; memcpy(cs, &cw, 3);   // 物品码（3 字符） | item code (3 chars)
+            fprintf(fp, "item id=%u code=%s", *(uint32_t *)(x + 8), cs);
+            for (int q = 0; q < 0x50; q += 4) fprintf(fp, " %02x:%08x", q, *(uint32_t *)(d + q));   // 物品数据前 0x50 字节 | first 0x50 bytes of the item data
+            fprintf(fp, "\n");
+            x = *(uint64_t *)(d + 0xb0); }
+    fprintf(fp, "=== end dump %d\n", n); fclose(fp);
+    LOG("帽子探针：dump %d 写完（%s）", n, path);
+}
+
+// ---- 头盔显隐（物品栏那颗「帽子」开关）：客户端把戴着的那件头盔标成「没戴」，模型就不画它；
+//      属性 / 防御 / 抗性全都还是服务端那份的数，不影响强度。服务端拍每拍算出「戴着的那件头盔 id」发布出来，
+//      主线程按它去找客户端那件、改 / 还原它的 +0x18（0x00800010 = 戴着，0x00800011 = 不画）。
+// ---- Helmet show/hide (the 「帽子」 switch in the inventory): the client marks the worn helmet as "not worn" so the model
+//      stops drawing it; stats / defense / resistances still come from the server copy. The server tick publishes the id of
+//      the helmet being worn each tick, and the main thread finds that item in the client copy and flips its +0x18
+//      (0x00800010 = worn, 0x00800011 = not drawn).
+static _Atomic uint32_t g_hat_srv;
+static int g_hat_hide = -1;
+static uint32_t g_hat_done;
+int is_helmet_code(uint32_t c) {
+    static const char *k[] = { "cap", "skp", "hlm", "fhl", "ghm", "crn", "msk", "xap", "ba1", "ba2", "ba3", "ba4", "ba5", "ci0", "ci1", "ci2", "ci3", "dr1", "dr2" };
+    for (unsigned i = 0; i < sizeof k / sizeof k[0]; i++) { uint32_t v = 0; memcpy(&v, k[i], 3); if ((c & 0xffffffu) == (v & 0xffffffu)) return 1; }
+    return 0;
+}
+static void hat_load(void) { if (g_hat_hide >= 0) return; FILE *f = fopen("files/hat_hide", "rb"); g_hat_hide = f ? 1 : 0; if (f) fclose(f); }
+static void hat_toggle(void) {
+    hat_load(); g_hat_hide = !g_hat_hide;
+    if (g_hat_hide) { FILE *f = fopen("files/hat_hide", "wb"); if (f) { fputs("1", f); fclose(f); } }
+    else remove("files/hat_hide");
+    LOG("帽子：%s", g_hat_hide ? "隐藏（客户端不画头盔）" : "显示");
+}
+static void hat_apply(uint8_t *b) {
+    hat_load();
+    uint32_t sid = atomic_load(&g_hat_srv);
+    if (!sid) { g_hat_done = 0; return; }
+    uint32_t slot = 8, lid = 0xffffffffu;
+    memcpy(&slot, b + 0x2d20e4c, 4); if (slot >= 8) return;
+    memcpy(&lid, b + 0x2d60380 + 4 * slot, 4); if (lid == 0xffffffffu) return;
+    uint64_t u = 0;
+    for (uint64_t x = *(uint64_t *)(b + 0x2d603a0 + 8 * (lid & 0x7f)); x && !u; x = *(uint64_t *)(x + 0x158))
+        if (*(uint32_t *)(x + 8) == lid && *(uint32_t *)x == 0) u = x;
+    if (!u) return;
+    uint64_t iv = *(uint64_t *)(u + 0x90); if (!iv || *(uint32_t *)iv != 0x01020304) return;
+    for (uint64_t x = *(uint64_t *)(iv + 0x10), k = 0; x && k < 64; k++) { uint64_t d = *(uint64_t *)(x + 0x10); if (!d) break;
+        if (*(uint32_t *)(x + 8) == sid) {
+            uint32_t v = *(uint32_t *)(d + 0x18);
+            if (g_hat_hide && v == 0x00800010u) { *(uint32_t *)(d + 0x18) = 0x00800011u;
+                if (g_hat_done != sid) { g_hat_done = sid; LOG("帽子：头盔 %u 在客户端标成没戴", sid); } }
+            else if (!g_hat_hide && v == 0x00800011u && g_hat_done == sid) { *(uint32_t *)(d + 0x18) = 0x00800010u; g_hat_done = 0; LOG("帽子：恢复显示头盔"); }
+            return; }
+        x = *(uint64_t *)(d + 0xb0); }
+}
 void dm_pouch_step(uint8_t *b) {   // 游戏主线程每帧（dm_world.c） | every frame on the game main thread (dm_world.c)
     if (!b) return; B = b; uint64_t fr = dm_guest_frame();
-    atomic_store(&g_stash_open, (dm_ui_panel_state() & 1) != 0);   // 储藏箱开着：服务端拍把囊里的放进高级仓库 | Stash open: the server tick moves what is in the pouch into the advanced stash
+    atomic_store(&g_stash_open, (dm_ui_panel_state() & 1) != 0);
+    // 面板被关掉时把弹框标记清掉：交互层按 g_rc 吃掉所有点击，标记留着会让整个界面点不动
+    // Clear the popup flag when the panel goes away: the interaction layer swallows every tap while g_rc is set,
+    // and a stale flag would leave the whole UI unclickable.
+    { int dm_ui_panel_shown(const char *); static int chk;   // 用面板树判断储藏箱还在不在（原先读 b+0x2d5ff60 这个字节，在珍宝匣页上是 0，弹框一开就被清掉、闸门全失效） | ask the panel tree whether the stash is still up (the old byte read b+0x2d5ff60 is 0 on the trove page, so the flag got cleared the moment the popup opened and the gate never worked)
+      if (g_rc && !dm_ui_panel_shown("BankExpansionLayout")) { g_rc = 0; if (chk++ < 20) LOG("符文合成：储藏箱关了 → 清弹框标记"); } }   // 储藏箱开着：服务端拍把囊里的放进高级仓库 | Stash open: the server tick moves what is in the pouch into the advanced stash
     ui_pump();
     uint64_t pl = cli_player(); if (!pl) { memset(g_pk, 0, sizeof g_pk); memset(g_gnd, 0, sizeof g_gnd); g_ist = -1; return; }
     uint32_t pm = *(uint32_t *)(pl + 0xc); if (pm == 0 || pm == 17) return;   // 死亡中 / 已死 | Dying / dead
@@ -612,11 +711,21 @@ void dm_pouch_step(uint8_t *b) {   // 游戏主线程每帧（dm_world.c） | ev
     if (*(uint64_t *)(inv + 0x40)) return;   // 手上拿着东西：不捡、不存（同药水自动拾取） | Something is held in hand: no pickup, no storing (same as potion auto pickup)
     store_step(pl, fr);
     if (dm_custom_get("gem_pick") && g_ist < 0) auto_pick(pl, fr);
+    hat_apply(b);
+    hat_probe(b);   // 帽子探针（环境变量开关；不带开关时一行不开销） | helmet probe (env switch; no cost when unset)
 }
 void dm_pouch_srv_tick(uint8_t *b, uint64_t G, uint64_t player) {
     static uint64_t lp; if (!player) { lp = 0; pthread_mutex_lock(&g_umu); g_uload = 0; pthread_mutex_unlock(&g_umu); return; }
     B = b; uint32_t tq = *(uint32_t *)(G + 0x170);
     if (player != lp) { lp = player; uint64_t pd = *(uint64_t *)(player + 0x10); pthread_mutex_lock(&g_umu); strlcpy(g_uchar, pd ? (const char *)pd : "", sizeof g_uchar); pouch_load(); g_uload = 1; pthread_mutex_unlock(&g_umu); }   // 进局（换了玩家单位）读一次 | Read once on entering a run (the player unit changed)
+    {   // 戴着的那件头盔（服务端这份是准的）：主线程按这个 id 去客户端那件上改「画不画」
+        // The helmet being worn (the server copy is authoritative): the main thread uses this id to flip "draw or not" on the client copy
+        uint32_t hid = 0; uint64_t inv = *(uint64_t *)(player + 0x90);
+        if (inv && *(uint32_t *)inv == 0x01020304)
+            for (uint64_t x = *(uint64_t *)(inv + 0x10), k = 0; x && k < 512; k++) { uint64_t d = *(uint64_t *)(x + 0x10); if (!d) break;
+                if (*(uint32_t *)(x + 0xc) == 1 && is_helmet_code(item_code(x))) { hid = *(uint32_t *)(x + 8); break; }
+                x = *(uint64_t *)(d + 0xb0); }
+        atomic_store(&g_hat_srv, hid); }
     int near = ((int (*)(uint64_t, uint64_t, int, int))(b + 0x650d10))(G, player, 0x10b, 0x32) & 1; atomic_store(&g_near_pub, near);
     if (!near && g_nfail) { g_nfail = 0; LOG("百宝囊：离开储藏箱 → 清除「存不进」名单，下次开箱重新试"); }   // 原版「移到仓库」用的同一个判断：50 以内有储藏箱物件 267 | The same check the original game's "move to stash" uses: a stash object 267 within 50
     uint32_t unit = adv_stash_unit(player); int go63 = near && unit;
