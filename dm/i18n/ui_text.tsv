@@ -500,3 +500,4 @@ dmAndroidSaveTransferFailed	存档导入 / 导出没完成：%s。原存档没�
 dmAndroidSaveImportPartial	存档导入没完成：%1$s。这些已经加进来了：%2$s，其余存档没动。	Save import did not finish: %1$s. These were already added: %2$s; nothing else changed.	La importación de partidas no terminó: %1$s. Ya se añadieron: %2$s; nada más cambió.		A importação de jogos salvos não terminou: %1$s. Estes já foram adicionados: %2$s; nada mais mudou.	Импорт сохранений не завершён: %1$s. Уже добавлено: %2$s; остальное не изменилось.	저장 파일 가져오기가 끝나지 않았습니다: %1$s. 이미 추가됨: %2$s, 나머지는 그대로입니다.	安卓存档导出 / 导入提示（DmActivity.java）| Android save export / import notice
 dmHatHide	帽子:藏	Hat: off	Sombrero: no		Sombrero: no	Шлем: скрыт	모자: 숨김	物品栏「帽子」开关：当前隐藏头盔（dm_pouch.c）
 dmHatShow	帽子:戴	Hat: on	Sombrero: sí		Sombrero: sí	Шлем: виден	모자: 표시	物品栏「帽子」开关：当前显示头盔
+dmHatTitle	显示头盔	Show helmet	Mostrar casco		Mostrar casco	Показывать шлем	투구 표시	物品栏头盔格旁勾选框的说明（dm_pouch.c，勾上 = 显示，取消 = 隐藏）

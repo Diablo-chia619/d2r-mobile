@@ -600,7 +600,7 @@ void dm_pouch_rc_tap(const char *arg) {
 }
 int dm_rc_open(void) { return g_rc; }   // 弹框开着？交互层用 | popup open? used by the interaction layer
 void dm_rc_close(void) { if (B) { uint64_t root = *(uint64_t *)(B + 0x2f05458); if (root) rc_show(root, 0); } }
-static void hat_toggle(void);   // 定义在后面（帽子显隐） | defined further down (helmet show/hide)
+static void hat_ui_pump(uint8_t *);   // 定义在后面（帽子显隐） | defined further down (helmet show/hide)
 
 void dm_pouch_on_uimsg(const char *cat, const char *act, const char *arg) {   // 界面消息回调（diag.c）：我们的两个按钮发 ClosePanel:TouchPouch / TouchStore | UI message callback (diag.c): our two buttons send ClosePanel:TouchPouch / TouchStore
     if (!cat || !act || !arg || strcmp(cat, "PanelManager") || strcmp(act, "ClosePanel")) return;
@@ -612,7 +612,6 @@ void dm_pouch_on_uimsg(const char *cat, const char *act, const char *arg) {   //
     if (!strcmp(arg, "TouchRcClose")) { uint64_t root = *(uint64_t *)(B + 0x2f05458); rc_show(root, 0); LOG("符文合成：关了弹框（点了关闭）"); return; }
     if (!strncmp(arg, "TouchRcRow", 10) && strncmp(arg + 10, "Bg", 2)) { dm_pouch_rc_tap(arg); return; }   // 点某一行 → 合一个那一号 | a row was tapped -> craft one of that rune
     else if (!strcmp(arg, "TouchStore") || !strcmp(arg, "TouchPadStore")) atomic_store(&g_store_req, 1);   // TouchPadStore = 手柄版暂停菜单的「存放」行（touch_layout.py pad_pause） | TouchPadStore = the "Deposit" row of the controller pause menu (touch_layout.py pad_pause)
-    else if (!strcmp(arg, "TouchHat")) hat_toggle();   // 物品栏「帽子」开关 | the 「帽子」 (helmet) switch in the inventory
     else if (!strcmp(arg, "TouchRejuvS")) atomic_store(&g_rejuv_req, 1);   // 小紫框：从囊里取一瓶补到腰带 | small rejuv box: take one from the pouch and top up the belt
     else if (!strcmp(arg, "TouchRejuvL")) atomic_store(&g_rejuv_req, 2);   // 大紫框 | full rejuv box
 }
@@ -666,12 +665,25 @@ int is_helmet_code(uint32_t c) {
     return 0;
 }
 static void hat_load(void) { if (g_hat_hide >= 0) return; FILE *f = fopen("files/hat_hide", "rb"); g_hat_hide = f ? 1 : 0; if (f) fclose(f); }
-static void hat_toggle(void) {
-    hat_load(); g_hat_hide = !g_hat_hide;
+static void hat_save(void) {
     if (g_hat_hide) { FILE *f = fopen("files/hat_hide", "wb"); if (f) { fputs("1", f); fclose(f); } }
     else remove("files/hat_hide");
-    LOG("帽子：%s", g_hat_hide ? "隐藏（客户端不画头盔）" : "显示");
 }
+static void hat_ui_pump(uint8_t *b) {   // 物品栏面板开着时同步那颗勾选框（勾上 = 隐藏头盔） | sync the checkbox while the inventory panel is up (ticked = hide the helmet)
+    hat_load();
+    int dm_ui_panel_shown(const char *);
+    static int seen;
+    if (!dm_ui_panel_shown("PlayerInventoryExpansionLayout")) { seen = 0; return; }
+    uint64_t root = *(uint64_t *)(b + 0x2f05458); if (!root) return;
+    uint64_t w = find_w(root, "TouchHat", 1); if (!w) return;
+    // 勾选框写的是「显示头盔」：勾上 = 显示，取消 = 不画 | the checkbox reads 「显示头盔」 (show helmet): ticked = show, cleared = hide
+    if (seen < 20) {   // 刚打开：勾选框照存的状态摆，别覆盖玩家刚点的 | just opened: lay the checkbox out according to the saved state; do not overwrite a fresh tap
+        if (++seen == 1) *(int32_t *)(w + 0x6e8) = g_hat_hide ? 0 : 4;
+        return; }
+    int on = *(int32_t *)(w + 0x6e8) == 4;   // 4 = 勾上 = 显示 | 4 = ticked = show
+    if (on == g_hat_hide) { g_hat_hide = !on; hat_save(); LOG("帽子：勾选框 → %s", on ? "显示头盔" : "隐藏头盔"); }
+}
+
 static void hat_apply(uint8_t *b) {
     hat_load();
     uint32_t sid = atomic_load(&g_hat_srv);
@@ -712,6 +724,7 @@ void dm_pouch_step(uint8_t *b) {   // 游戏主线程每帧（dm_world.c） | ev
     store_step(pl, fr);
     if (dm_custom_get("gem_pick") && g_ist < 0) auto_pick(pl, fr);
     hat_apply(b);
+    hat_ui_pump(b);
     hat_probe(b);   // 帽子探针（环境变量开关；不带开关时一行不开销） | helmet probe (env switch; no cost when unset)
 }
 void dm_pouch_srv_tick(uint8_t *b, uint64_t G, uint64_t player) {

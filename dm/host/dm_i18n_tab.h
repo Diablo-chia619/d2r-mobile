@@ -502,4 +502,5 @@ static const struct { const char *k, *zh, *en, *es, *mx, *pt, *ru, *ko; } k_dm_i
     { "dmAndroidSaveImportPartial", "存档导入没完成：%1$s。这些已经加进来了：%2$s，其余存档没动。", "Save import did not finish: %1$s. These were already added: %2$s; nothing else changed.", "La importación de partidas no terminó: %1$s. Ya se añadieron: %2$s; nada más cambió.", "La importación de partidas no terminó: %1$s. Ya se añadieron: %2$s; nada más cambió.", "A importação de jogos salvos não terminou: %1$s. Estes já foram adicionados: %2$s; nada mais mudou.", "Импорт сохранений не завершён: %1$s. Уже добавлено: %2$s; остальное не изменилось.", "저장 파일 가져오기가 끝나지 않았습니다: %1$s. 이미 추가됨: %2$s, 나머지는 그대로입니다." },
     { "dmHatHide", "帽子:藏", "Hat: off", "Sombrero: no", "Sombrero: no", "Sombrero: no", "Шлем: скрыт", "모자: 숨김" },
     { "dmHatShow", "帽子:戴", "Hat: on", "Sombrero: sí", "Sombrero: sí", "Sombrero: sí", "Шлем: виден", "모자: 표시" },
+    { "dmHatTitle", "显示头盔", "Show helmet", "Mostrar casco", "Mostrar casco", "Mostrar casco", "Показывать шлем", "투구 표시" },
 };
