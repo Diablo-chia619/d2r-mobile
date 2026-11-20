@@ -372,6 +372,28 @@ static int w_project(uint8_t *b, uint64_t scene, uint64_t u, float *out, int top
 // straight from the UI thread (JNI) crashed the game in testing. So, like dm_chest_step / g_chest_pub, the game thread
 // fills g_merc_pub and the UI-side dm_merc_talk only reads that copy.
 static float g_merc_pub[4];
+void dm_ctx_set(int i, int v);   // 定义在后面（g_ctx 那块） | defined further down, next to g_ctx
+// ---- 台词也进游戏聊天栏（原版系统提示「[游戏] …」）----
+// dm_game_notice（dm_bossrush.c）只许服务端线程调，所以界面线程（JNI）只入队，hud_tick 出队代发。
+// ---- Lines also go into the game's chat bar (the original system notice 「[Game] ...」) ----
+// dm_game_notice (dm_bossrush.c) may only be called from the server thread, so the UI thread (JNI) only queues and
+// hud_tick sends them.
+static _Atomic unsigned g_say_w, g_say_r;
+static char g_say_q[8][160];
+void dm_merc_say(const char *t) {   // 界面线程 | UI thread
+    if (!t || !t[0]) return;
+    unsigned w = atomic_load(&g_say_w);
+    if (w - atomic_load(&g_say_r) >= 8) return;   // 满了就丢，聊天栏不值得为它卡 | drop when full, not worth blocking for
+    strlcpy(g_say_q[w % 8], t, 160);
+    atomic_store(&g_say_w, w + 1);
+}
+int dm_merc_say_take(char *out, int cap) {   // 服务端拍 | server tick
+    unsigned w = atomic_load(&g_say_w), r = atomic_load(&g_say_r);
+    if (r == w) return 0;
+    strlcpy(out, g_say_q[r % 8], (size_t)cap);
+    atomic_store(&g_say_r, r + 1);
+    return 1;
+}
 static void w_merc_step(void) {
     uint8_t *b = wb(); uint64_t pl = b ? w_player() : 0, lv = pl ? w_level(pl) : 0;
     if (!pl || !lv) { g_merc_pub[3] = 0; return; }
@@ -394,13 +416,18 @@ static void w_merc_step(void) {
             uint32_t cls = *(uint32_t *)(u + 4);
             if (cls != 271 && cls != 338 && cls != 359 && cls != 560 && cls != 561) continue;
             if (!w_project(b, scene, u, feet, 0) || !w_project(b, scene, u, head, 1)) continue;
-            g_merc_pub[0] = feet[0]; g_merc_pub[1] = feet[1]; g_merc_pub[2] = head[1]; g_merc_pub[3] = 1; return;
+            g_merc_pub[0] = feet[0]; g_merc_pub[1] = feet[1]; g_merc_pub[2] = head[1]; g_merc_pub[3] = 1;
+            // 佣兵类号 = 他的职业（271 罗格弓手 / 338 沙漠战士 / 359 铁狼法师 / 560·561 野蛮人），
+            // 交给台词层，免得模型自己瞎猜「你举着盾」（罗格是弓手，没有盾）
+            // Mercenary class id = his profession (271 Rogue archer / 338 Desert Mercenary / 359 Iron Wolf caster /
+            // 560-561 Barbarian) so the model does not invent a shield for an archer
+            dm_ctx_set(15, (int)cls);
+            return;
         }
     g_merc_pub[3] = 0;
 }
 // 附近怪数 / 精英数 + 场景 id（半径 20 格；精英 = 档位 != 0，档位与名字颜色同源 dm_threat_tier）
 // Nearby monster / elite counts + level id (radius 20 cells; elite = tier != 0, the same tier as the name colour)
-void dm_ctx_set(int i, int v);   // 定义在后面（g_ctx 那块） | defined further down, next to g_ctx
 static void w_ctx_step(void) {
     uint8_t *b = wb(); uint64_t pl = b ? w_player() : 0, lv = pl ? w_level(pl) : 0;
     if (!pl || !lv) { dm_ctx_set(4, 0); dm_ctx_set(5, 0); return; }

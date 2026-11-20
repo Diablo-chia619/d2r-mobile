@@ -868,9 +868,15 @@ static void hud_tick(uint64_t G) {        // 每拍：受控玩家等级 / 本�
         // Player health for the mercenary lines: reuse the read above (the game's own stat getter, with the gear
         // accumulative layer). It was previously written as a call through G + 0x5b9290, but G is the game state
         // pointer, not the module base, so it jumped to a wrong address and segfaulted (bt at main+0x13493c)
+        // 佣兵台词进聊天栏：界面线程入队，这里出队交给原版系统提示（只许服务端线程调）
+        // Mercenary lines into the chat bar: queued by the UI thread, taken here and handed to the original system notice
+        { int dm_merc_say_take(char *, int); void dm_game_notice(uint8_t *, const char *); char line[160];
+          while (dm_merc_say_take(line, (int)sizeof line)) dm_game_notice(mm ? mm->base : NULL, line); }
         { void dm_ctx_set(int, int);
           dm_ctx_set(0, h.hp_max > 0 ? (int)((long long)h.hp * 1000 / h.hp_max) : 0);
-          dm_ctx_set(1, h.hp_max); dm_ctx_set(6, h.hp); }
+          dm_ctx_set(1, h.hp_max); dm_ctx_set(6, h.hp);
+          // 玩家蓝量千分比：没蓝时佣兵也该有话说 | player mana per mille: the mercenary should speak up when it runs dry
+          dm_ctx_set(14, h.mp_max > 0 ? (int)((long long)h.mp * 1000 / h.mp_max) : 0); }
         uint32_t sp = 0, kp = 0, pm = 0; stat_read(player, 4, &sp); stat_read(player, 5, &kp); h.points = (int)(sp + kp);
         if (tk_rd(player + 0xC, &pm, 4)) h.dead = dm_hud_player_mode_dead(pm);   // 单位 +0xC = 动画模式（dm_hud.h） | Unit +0xC = animation mode (dm_hud.h)
         // 手上物品：这里是服务端玩家，只作诊断；h.holding 由 dm_hud_get 取客户端的真值（dm_hud.c）。两端持续不一致（服务端光标挂着、客户端手上空了）记红行：

@@ -35,7 +35,7 @@ final class MercTalk {
     // Environment (filled by the host): 0 player hp per mille, 1 player max, 2 merc hp per mille, 3 merc max,
     // 4 nearby monsters, 5 nearby elites, 6 player current hp, 7 level id
     private final int[] ctx = new int[16];
-    private int lastPm = -1, lastLv = -1, lastMon = -1, eliteDrawn = -1;
+    private int lastPm = -1, lastLv = -1, lastMon = -1, eliteDrawn = -1, lastMp = -1;
     private String pendingWhy;
 
     // 最近说过的几句（拼进提示词要求不重复） | the last few lines, put into the prompt so it does not repeat
@@ -104,16 +104,17 @@ final class MercTalk {
         // The potion test uses "per mille rose by 6% or more" (an absolute threshold misses small potions on a high
         // level character) and only counts as healing after having lost life
         String why = null;
-        int hp = ctx[6], pm = ctx[0], mm = ctx[2], mon = ctx[4], elite = ctx[5], lv = ctx[7];
+        int hp = ctx[6], pm = ctx[0], mm = ctx[2], mon = ctx[4], elite = ctx[5], lv = ctx[7], mp = ctx[14];
         if (lastPm > 0 && pm > lastPm + 60 && pm < 990) why = "刚喝完一瓶药水，血回上来了";
         else if (pm > 0 && pm < 300 && lastPm >= 0 && pm < lastPm) why = "主人血量告急，快撑不住了";
         else if (mm > 0 && mm < 300) why = "你自己（佣兵）快被打死了";
         else if (elite > 0 && eliteDrawn != elite) why = "附近有精英怪（" + elite + " 只）";
         else if (lastLv != -1 && lv != lastLv) why = "刚走到一个新地方";
         else if (mon > lastMon + 4 && mon >= 6) why = "一拥而上，怪很多（" + mon + " 只）";
+        else if (lastMp > 0 && mp < 150 && mp < lastMp) why = "主人快没蓝了";
         else if (now - lastEventAt > interval * 1000L) why = "随口念叨一句";
 
-        lastPm = pm; lastLv = lv; lastMon = mon; eliteDrawn = elite;
+        lastPm = pm; lastLv = lv; lastMon = mon; eliteDrawn = elite; lastMp = mp;
         if (why == null || busy) return null;
         lastEventAt = now; pendingWhy = why;
         ask();
@@ -125,6 +126,7 @@ final class MercTalk {
         final StringBuilder env = new StringBuilder();
         env.append("此刻：");
         if (ctx[0] > 0) env.append("玩家血量 ").append(ctx[0] / 10).append("%，");
+        if (ctx[14] > 0) env.append("玩家蓝量 ").append(ctx[14] / 10).append("%，");
         if (ctx[2] > 0) env.append("你的血量 ").append(ctx[2] / 10).append("%，");
         // 附近有哪几种怪（类号查 MonNames，最多三种），模型自己决定要不要提它们、提哪只
         // Which kinds of monsters are nearby (class id looked up in MonNames, up to three); the model decides
@@ -152,7 +154,8 @@ final class MercTalk {
         // How it talks: no fixed form of address, no fixed pattern; it picks between griping, warning, small talk and
         // thinking aloud like a real person. The user asked not to keep saying "master" and to react to what is
         // actually happening, so we give it the situation and the numbers and let it choose what to say
-        final String prompt = "你是暗黑破坏神2里跟着玩家一起冒险的一名" + self + "，一路上会自己嘀咕、吐槽、提醒、闲聊。"
+        String job = jobOf(ctx[15]);
+        final String prompt = "你是暗黑破坏神2里跟着玩家一起冒险的一名" + self + "（" + (job != null ? job : "佣兵") + "），一路上会自己嘀咕、吐槽、提醒、闲聊。"
                 + "语气：" + tone + "。风格：" + style + "。"
                 + (extra != null && extra.length() > 0 ? extra + "。" : "")
                 + "刚才发生的事：" + (pendingWhy == null ? "没什么特别的" : pendingWhy) + "。" + env
@@ -192,6 +195,10 @@ final class MercTalk {
                     if (t.length() > 24) t = t.substring(0, 24);
                     line = t;
                     lastLineAt = System.currentTimeMillis();
+                    // 同时也丢进游戏聊天栏（原版系统提示一行「[游戏] …」），头顶气泡 + 聊天记录双通道
+                    // Also drop it into the game's chat bar (an original system notice line), so it shows both above
+                    // his head and in the chat log
+                    try { DmActivity.nativeMercSay(t); } catch (Throwable ignored) { }
                     recent.add(t);
                     while (recent.size() > 5) recent.remove(0);
                     if (debug > 0) Log.i(TAG, "佣兵说（" + pendingWhy + "）：" + t);
@@ -231,6 +238,20 @@ final class MercTalk {
             j++;
         }
         return out.toString();
+    }
+
+    // 佣兵类号 → 他到底是什么（271 罗格弓手 / 338 沙漠佣兵 / 359 铁狼法师 / 560·561 野蛮人）。
+    // 用户反馈：模型瞎猜「你有盾」，其实是弓手 —— 所以把职业写死进提示词
+    // Mercenary class id -> what he actually is. The user reported the model inventing a shield for an archer,
+    // so the profession is spelled out in the prompt
+    private static String jobOf(int cls) {
+        switch (cls) {
+            case 271: return "第一幕的罗格弓手，拿弓射箭，身上没有盾";
+            case 338: return "第二幕的沙漠佣兵，用长柄武器";
+            case 359: return "第三幕的铁狼法师，用剑和盾，会放法术";
+            case 560: case 561: return "第五幕的野蛮人，近战，用剑或斧";
+            default: return null;
+        }
     }
 
     private static int parseInt(String s, int d) {

@@ -81,6 +81,10 @@ public class DmActivity extends Activity implements SurfaceHolder.Callback, Disp
     // 佣兵台词的环境上下文（CamThreats 每帧取）：8 个整数，见 dm_world.c 的 g_ctx 注释
     // Environment context for the mercenary lines (taken every frame by CamThreats): 8 integers, see g_ctx in dm_world.c
     static native int nativeMercCtx(int[] out);
+    // 把一句台词交给原版系统提示（聊天栏一行 + 提示框）；界面线程调，宿主内部排队给服务端线程
+    // Hand one line to the original system notice (a chat bar line + the notice box); called on the UI thread, the
+    // host queues it for the server thread
+    static native void nativeMercSay(String text);
     // 小地图上的朝向箭头（CamThreats）：4 个数，返回 1 = 该画
     // Heading arrow on the minimap (CamThreats): 4 numbers, returns 1 = draw it
     static native int nativeCamHeading(float[] out);
