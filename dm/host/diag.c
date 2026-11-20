@@ -863,6 +863,14 @@ static void hud_tick(uint64_t G) {        // 每拍：受控玩家等级 / 本�
         module_t *mm = main_mod();
         if (mm) { int (*get)(uint64_t, int, int) = (int (*)(uint64_t, int, int))(mm->base + 0x5b9290);
             h.hp = get(player, 6, 0) >> 8; h.hp_max = get(player, 7, 0) >> 8; h.mp = get(player, 8, 0) >> 8; h.mp_max = get(player, 9, 0) >> 8; }
+        // 佣兵台词用的玩家血量：直接用上面这份（游戏自己的取属性，含装备累计层）。先前误把它写成 G + 0x5b9290
+        // 调用，而 G 是游戏状态指针、不是模块基址，等于跳到错地址 → 段错误（bt 停在 main+0x13493c）
+        // Player health for the mercenary lines: reuse the read above (the game's own stat getter, with the gear
+        // accumulative layer). It was previously written as a call through G + 0x5b9290, but G is the game state
+        // pointer, not the module base, so it jumped to a wrong address and segfaulted (bt at main+0x13493c)
+        { void dm_ctx_set(int, int);
+          dm_ctx_set(0, h.hp_max > 0 ? (int)((long long)h.hp * 1000 / h.hp_max) : 0);
+          dm_ctx_set(1, h.hp_max); dm_ctx_set(6, h.hp); }
         uint32_t sp = 0, kp = 0, pm = 0; stat_read(player, 4, &sp); stat_read(player, 5, &kp); h.points = (int)(sp + kp);
         if (tk_rd(player + 0xC, &pm, 4)) h.dead = dm_hud_player_mode_dead(pm);   // 单位 +0xC = 动画模式（dm_hud.h） | Unit +0xC = animation mode (dm_hud.h)
         // 手上物品：这里是服务端玩家，只作诊断；h.holding 由 dm_hud_get 取客户端的真值（dm_hud.c）。两端持续不一致（服务端光标挂着、客户端手上空了）记红行：

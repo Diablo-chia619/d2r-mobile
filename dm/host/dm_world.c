@@ -375,6 +375,17 @@ static float g_merc_pub[4];
 static void w_merc_step(void) {
     uint8_t *b = wb(); uint64_t pl = b ? w_player() : 0, lv = pl ? w_level(pl) : 0;
     if (!pl || !lv) { g_merc_pub[3] = 0; return; }
+    // 换图 / 加载画面期间不调投影：w_project（0x90d110）依赖的渲染状态那时还没就绪（bt 停在 main+0x13493c 的 ldarb）。
+    // 换图后静默 2 秒，跟 w_chest_step 一个口径
+    // No projection during a level change / load screen: w_project (0x90d110) depends on rendering state that is not
+    // ready then (the bt stops at the ldarb in main+0x13493c). Stay silent for 2 s after a level change, the same
+    // convention as w_chest_step
+    static uint64_t lv_seen, lv_at;
+    uint64_t ns = w_now_ns();
+    if (lv != lv_seen) { lv_seen = lv; lv_at = ns; }
+    if (ns - lv_at < 2000000000ull) { g_merc_pub[3] = 0; return; }
+    int px0 = 0, py0 = 0;
+    if (!w_unit_xy(pl, &px0, &py0) || (!px0 && !py0)) { g_merc_pub[3] = 0; return; }
     uint64_t scene = *(uint64_t *)(b + 0x2e2a698); if (!scene) { g_merc_pub[3] = 0; return; }
     int nodes = 0; float feet[2], head[2];
     for (int k = 0; k < 128 && nodes < 512; k++)
@@ -936,13 +947,8 @@ void dm_world_pump(void) {   // 取手柄处每帧调 | Called every frame at th
     DM_PROF(0, "w.map_mark", w_map_mark_step());
     DM_PROF(0, "w.map_goal", w_map_goal_step());
     DM_PROF(0, "w.chest", w_chest_step());
-    // 佣兵位置/环境：暂时关掉。w_project（游戏「单位→屏幕」0x90d110）在场景加载（LoadScreenPanel）那一拍会
-    // 读尚未就绪的渲染状态，实测段错误闪退（boot.log 的 bt 停在 main+0x13493c）。要用请设环境变量 DM_MERC_TALK=1。
-    // Mercenary position / environment: off for now. w_project (the game's "unit -> screen" 0x90d110) reads
-    // rendering state that is not ready yet during a level load (LoadScreenPanel) and segfaults in testing (the bt
-    // in boot.log stops at main+0x13493c). Set DM_MERC_TALK=1 to turn it back on.
-    { static int mot = -1; if (mot < 0) { const char *e = getenv("DM_MERC_TALK"); mot = e ? e[0] != '0' : 0; }
-      if (mot) { DM_PROF(0, "w.merc", w_merc_step()); DM_PROF(0, "w.ctx", w_ctx_step()); } }
+    DM_PROF(0, "w.merc", w_merc_step());
+    DM_PROF(0, "w.ctx", w_ctx_step());
     // 测试开关 DM_TEST_WORLD_TAP（及 TAP2 / TAP3 / TAP4）=<类型>:c<类号>@<拍>（或 <类型>:any@<拍> = 这一类里任意一个，物品只认地上的）：到这一拍起盯住这类单位，它一进画面就在它身体框中心落一次世界点按（走 dm_world_tap 的真实命中路径，
     // 不是直接指定目标）——Mac 宿主上验「点得中、走得到、开得了」用（iOS 包用触点脚本的 tap_unit，同一个量具）。5 秒内没进画面报一行并放弃。
     // Test switch DM_TEST_WORLD_TAP (and TAP2 / TAP3 / TAP4)=<type>:c<class>@<tick> (or <type>:any@<tick> = any one of this type, items only count when on the ground): from this tick on, watch this kind of unit, and as soon as it enters the picture drop one world tap at the center of its body box (going through the real hit path of dm_world_tap,
