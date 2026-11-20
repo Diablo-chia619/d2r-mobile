@@ -29,6 +29,15 @@ final class CamThreats extends View implements Choreographer.FrameCallback {
     private final Path arrow = new Path();
     private int count;
     private final float[] chest = new float[64 * 2];
+    // 佣兵台词：位置每帧取一次（nativeMercTalk），台词由 MercTalk 生成
+    // Mercenary chatter: the position is fetched every frame (nativeMercTalk), the line comes from MercTalk
+    private final float[] merc = new float[4];
+    private final int[] ctx = new int[8];
+    private int mercOn, mercDrawn;
+    private String talkLine;
+    private final MercTalk talk;
+    private final Paint talkPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint talkBg = new Paint(Paint.ANTI_ALIAS_FLAG);
     private int chestN, chestDrawn = -1;
     private final Paint dotFill = new Paint(Paint.ANTI_ALIAS_FLAG), dotEdge = new Paint(Paint.ANTI_ALIAS_FLAG);
     private boolean running, headOn, aimOn, ringTried;
@@ -42,6 +51,13 @@ final class CamThreats extends View implements Choreographer.FrameCallback {
         fill.setStyle(Paint.Style.FILL);
         edge.setStyle(Paint.Style.STROKE);
         edge.setColor(0xC0000000);
+        talk = new MercTalk(context);
+        talkPaint.setStyle(Paint.Style.FILL);
+        talkPaint.setColor(0xFFFFFFFF);
+        talkPaint.setTextAlign(Paint.Align.CENTER);
+        talkPaint.setShadowLayer(4f, 0f, 2f, 0xF0000000);
+        talkBg.setStyle(Paint.Style.FILL);
+        talkBg.setColor(0xB0000000);
     }
 
     void start() { if (!running) { running = true; Choreographer.getInstance().postFrameCallback(this); } }
@@ -60,7 +76,16 @@ final class CamThreats extends View implements Choreographer.FrameCallback {
         // Aim ring (while a skill button is dragged; the 5 x 5 grid projected by the host's dm_cam_aim): redrawn every frame while aiming
         boolean a = DmActivity.nativeCamAim(aim) == 25;
         chestN = DmActivity.nativeChestMarks(chest);
-        { boolean any = (n > 0 || chestN > 0 || headOn || a); if (any || n != count || headMoved || a != aimOn || chestN != chestDrawn) { count = n; headOn = h; aimOn = a; chestDrawn = chestN; System.arraycopy(head, 0, drawn, 0, 4); invalidate(); } }
+        mercOn = DmActivity.nativeMercTalk(merc);
+        DmActivity.nativeMercCtx(ctx);
+        // 每帧问一次台词（放在 doFrame：没有别的东西要画时 onDraw 不跑）。佣兵位置没拿到就不请求，
+        // 免得白烧 token 又画不出来
+        // Ask for a line every frame, here in doFrame: onDraw does not run when nothing else needs drawing.
+        // No request while the mercenary position is unavailable, otherwise it burns tokens for nothing
+        String cur = mercOn > 0 ? talk.line(ctx) : null;
+        if (cur != null) { if (!cur.equals(talkLine)) { talkLine = cur; invalidate(); } }
+        else if (talkLine != null) { talkLine = null; invalidate(); }
+        { boolean any = (n > 0 || chestN > 0 || headOn || a || mercOn > 0 || talk.ready()); if (any || n != count || headMoved || a != aimOn || chestN != chestDrawn) { count = n; headOn = h; aimOn = a; chestDrawn = chestN; System.arraycopy(head, 0, drawn, 0, 4); invalidate(); } }
         Choreographer.getInstance().postFrameCallback(this);
     }
 
@@ -144,6 +169,26 @@ final class CamThreats extends View implements Choreographer.FrameCallback {
             canvas.drawPath(arrow, fill);
             canvas.drawPath(arrow, edge);
             canvas.restore();
+        }
+        // 佣兵台词：画在他头顶上方（B 方案）
+        // Mercenary line: drawn above his head (option B)
+        String ln = talkLine;
+        if (ln != null && mercOn > 0 && merc[3] != 0f) {
+            float fs = Math.max(16f, h * 0.024f);
+            talkPaint.setTextSize(fs);
+            // 用脚底坐标往上抬（merc[2] 是投影给的头顶 y，实测和字要对齐的位置差一截）：按屏幕高度比例抬，
+            // 距离远近都由下面这个比例把关，不再依赖投影返回的头顶像素
+            // Raise from the feet coordinate (merc[2] is the projected head-top y, which measured a bit off from where
+            // the text should sit): lift by a fraction of the screen height, which holds at any distance
+            float x = merc[0], y = merc[1] - h * 0.16f;
+            if (y < fs * 2) y = fs * 2;
+            if (x < fs * 2) x = fs * 2; if (x > w - fs * 2) x = w - fs * 2;
+            if (y < fs * 2) y = fs * 2;
+            float tw = talkPaint.measureText(ln);
+            talkBg.setAlpha(150);
+            canvas.drawRoundRect(x - tw / 2 - fs * 0.4f, y - fs * 0.95f, x + tw / 2 + fs * 0.4f, y + fs * 0.35f, fs * 0.35f, fs * 0.35f, talkBg);
+            canvas.drawText(ln, x, y, talkPaint);
+            invalidate();
         }
     }
 }

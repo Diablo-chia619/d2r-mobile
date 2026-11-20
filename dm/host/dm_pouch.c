@@ -259,6 +259,23 @@ static void stash63_send(uint32_t id, uint32_t unit) {
     LOG("存放：物品 id %u → 客户端发原版移到仓库（高级仓库单位 %u）", id, unit);
 }
 
+// ---- 服务端拍 → 主线程的 0x63 请求队列 ----
+// 服务端拍里**不能**再跳收包处理函数（0x6e5b40）：那是重入，实测会把游戏打崩（见 stash63_send 上方）。
+// 所以服务端拍只把「要移到仓库的物品」排进队列，主线程在 dm_pouch_step 里用游戏自己的发包函数发出去。
+// ---- Server-tick -> main-thread queue for the 0x63 ----
+// The server tick must not jump into the packet handler (0x6e5b40): that re-enters the server and crashed the
+// game in testing (see above stash63_send). So the tick only queues "items to move to the stash" and the main
+// thread sends them through the game packet send in dm_pouch_step.
+static _Atomic uint64_t g_q63[128]; static _Atomic unsigned g_w63, g_r63;   // 低位 = 物品 id，高位 = 高级仓库单位 | low half = item id, high half = advanced-stash unit
+static void queue63(uint32_t id, uint32_t unit) {
+    unsigned w = atomic_load(&g_w63);
+    if (w - atomic_load(&g_r63) >= 128) { LOG("ãçº¢ãå­æ¾ï¼å¾åéåæ»¡ï¼ç©å id %u è¿æ¬¡æ²¡å", id); return; }
+    atomic_store(&g_q63[w % 128], (uint64_t)id | ((uint64_t)unit << 32)); atomic_store(&g_w63, w + 1); }
+static void flush63(void) {   // 主线程调 | called on the main thread
+    unsigned r = atomic_load(&g_r63), w = atomic_load(&g_w63);
+    for (; r != w; r++) { uint64_t v = atomic_load(&g_q63[r % 128]); stash63_send((uint32_t)v, (uint32_t)(v >> 32)); }
+    atomic_store(&g_r63, w); }
+
 // ---- 仓库页里新落下的符文 / 宝石 / 材料自动转进高级仓库（珍宝匣）：玩家把它们拖进个人页 / 共享页的格子、或按住确认键移到当前页，落下后由这里代发原版「移到仓库」。
 // 不管是哪个入口放进去的都认（只看结果：这件现在在个人页的格子里）。开箱那一刻已经在个人页里的不动（玩家以前自己摆的）；发了 2 秒没进去（那一格叠满）的留在原处、记下不再发。
 // 只管个人页（玩家物品栏里方式 0、页 4 的物品）。共享页不管：原版「移到仓库」不收来源在共享页的物品（实测：发了 2 秒还在原格），
@@ -288,7 +305,7 @@ static int stash_sweep(uint8_t *b, uint64_t G, uint64_t player, uint32_t unit, u
         if (tq - dm[i].t >= 50) { if (nold < 768) old[nold++] = dm[i].id; g_storefail[g_nfail++ % 32] = dm[i].id; LOG("珍宝匣：物品 id %u 发了移到仓库 2 秒还在仓库页（那一格叠满 / 不收）→ 留在原处，不再发", dm[i].id); full = 1; dm[i] = dm[--nsw]; continue; }
         i++; }
     for (int k = 0; k < nc && nsw < 16; k++) { int skip = 0; for (int i = 0; i < nold && !skip; i++) skip = old[i] == cand[k]; for (int i = 0; i < nsw && !skip; i++) skip = dm[i].id == cand[k];
-        if (skip) continue; move_to_stash(b, G, player, cand[k], unit); dm[nsw++] = (dm_t){ cand[k], tq }; LOG("珍宝匣：仓库页里新落下的物品 id %u → 原版移到仓库（高级仓库单位 %u）", cand[k], unit); break; }   // 一拍发一件 | send one item per tick
+        if (skip) continue; queue63(cand[k], unit); dm[nsw++] = (dm_t){ cand[k], tq }; LOG("珍宝匣：仓库页里新落下的物品 id %u → 原版移到仓库（高级仓库单位 %u）", cand[k], unit); break; }   // 一拍发一件 | send one item per tick
     return full;
 }
 
@@ -634,6 +651,7 @@ void dm_pouch_on_uimsg(const char *cat, const char *act, const char *arg) {   //
 }
 void dm_pouch_step(uint8_t *b) {   // 游戏主线程每帧（dm_world.c） | every frame on the game main thread (dm_world.c)
     if (!b) return; B = b; uint64_t fr = dm_guest_frame();
+    flush63();   // 服务端拍排进的 0x63 在主线程发 | send the 0x63 the server tick queued, on the main thread
     atomic_store(&g_stash_open, (dm_ui_panel_state() & 1) != 0);
     // 面板被关掉时把弹框标记清掉：交互层按 g_rc 吃掉所有点击，标记留着会让整个界面点不动
     // Clear the popup flag when the panel goes away: the interaction layer swallows every tap while g_rc is set,
@@ -679,7 +697,7 @@ void dm_pouch_srv_tick(uint8_t *b, uint64_t G, uint64_t player) {
     pthread_mutex_lock(&g_umu);
     for (unsigned r = atomic_load(&g_absr); r != atomic_load(&g_absw); r++) { uint32_t id = atomic_load(&g_absq[r % 64]); atomic_store(&g_absr, r + 1);   // 收：储藏箱旁直接进高级仓库，别处进囊 | Stow: next to the stash it goes straight into the advanced stash, elsewhere into the pouch
         if (go63) { uint64_t it3 = bag_item(player, id), d3 = it3 ? *(uint64_t *)(it3 + 0x10) : 0;
-            move_to_stash(b, G, player, id, unit); if (nw < 64) wl[nw++] = (watch){ id, tq }; { if (it3 && d3) { uint32_t c3 = item_code(it3) & 0xffffffu; g_sentcode[g_nsent % 16] = c3; g_sentfr[g_nsent % 16] = tq; g_nsent++; } }
+            queue63(id, unit); if (nw < 64) wl[nw++] = (watch){ id, tq }; { if (it3 && d3) { uint32_t c3 = item_code(it3) & 0xffffffu; g_sentcode[g_nsent % 16] = c3; g_sentfr[g_nsent % 16] = tq; g_nsent++; } }
             LOG("百宝囊：物品 id %u 在储藏箱旁 → 原版移到仓库（高级仓库单位 %u）", id, unit); }
         else if (!unit) LOG("百宝囊：物品 id %u —— 这个角色没有高级仓库，不收", id);
         else if (pouch_put(b, G, player, id) > 0) saved = 1; }
@@ -696,11 +714,11 @@ void dm_pouch_srv_tick(uint8_t *b, uint64_t G, uint64_t player) {
               LOG("测试 DM_TEST_HOLDY：拍 %u 对背包里的 %s（id %u，格 %u,%u）代发 0x%02x", tq, code, id, x, y, kind);
               *(uint32_t *)(G + 0x19050) = 1; ((void (*)(uint64_t, uint64_t, uint8_t *, uint32_t))(b + 0x6e5b40))(G, player, pk, (uint32_t)ln); *(uint32_t *)(G + 0x19050) = 0; } } }
     for (int i = 0; i < g_c2s_nq; i++) { uint32_t id = g_c2s_q[i];   // 拖进共享页被改道放回背包的（dm_pouch_c2s）：人还在箱子旁就发原版移到仓库 | items dragged into the shared tab and rerouted back to the inventory (dm_pouch_c2s): if still at the stash, send the game's move-to-stash
-        if (go63 && bag_item(player, id)) { move_to_stash(b, G, player, id, unit); if (nw < 64) wl[nw++] = (watch){ id, tq }; LOG("珍宝匣：物品 id %u 已回到背包 → 原版移到仓库（高级仓库单位 %u）", id, unit); }
+        if (go63 && bag_item(player, id)) { queue63(id, unit); if (nw < 64) wl[nw++] = (watch){ id, tq }; LOG("珍宝匣：物品 id %u 已回到背包 → 原版移到仓库（高级仓库单位 %u）", id, unit); }
         else LOG("珍宝匣：物品 id %u 改道后%s，留在背包", id, go63 ? "不在背包里" : "人已离开储藏箱"); }
     g_c2s_nq = 0; if (g_c2s_full) { g_c2s_full = 0; full_notice = 1; }
     for (int i = 0; i < g_nready; i++) {   // 已证明放进背包的 → 0x63；证明到时人已离开储藏箱就收回囊里 | Those proven to be in the inventory -> 0x63; if the player has left the stash by the time the proof arrives, take it back into the pouch
-        if (go63) { move_to_stash(b, G, player, g_ready[i], unit); if (nw < 64) wl[nw++] = (watch){ g_ready[i], tq }; { uint64_t it3 = bag_item(player, g_ready[i]), d3 = it3 ? *(uint64_t *)(it3 + 0x10) : 0; if (it3 && d3) { uint32_t c3 = item_code(it3) & 0xffffffu; g_sentcode[g_nsent % 16] = c3; g_sentfr[g_nsent % 16] = tq; g_nsent++; } } }
+        if (go63) { queue63(g_ready[i], unit); if (nw < 64) wl[nw++] = (watch){ g_ready[i], tq }; { uint64_t it3 = bag_item(player, g_ready[i]), d3 = it3 ? *(uint64_t *)(it3 + 0x10) : 0; if (it3 && d3) { uint32_t c3 = item_code(it3) & 0xffffffu; g_sentcode[g_nsent % 16] = c3; g_sentfr[g_nsent % 16] = tq; g_nsent++; } } }
         else if (pouch_put(b, G, player, g_ready[i]) > 0) { saved = 1; LOG("百宝囊：物品 id %u 落盘证明时已离开储藏箱，收回囊里", g_ready[i]); } }
     g_nready = 0;
     for (int i = 0; i < nw; ) {   // 0x63 之后：离开了背包 = 进了高级仓库（叠进去的那件已释放）；2 秒还在背包（页满 / 叠满）→ 收回囊里 | After 0x63: left the inventory = entered the advanced stash (the item that was stacked in has been freed); still in the inventory after 2 seconds (page full / stack full) -> take it back into the pouch

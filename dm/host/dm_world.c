@@ -359,6 +359,57 @@ int dm_cam_on(void); int dm_cam_tap_for_unit(float tx, float ty, float fx, float
 int dm_ui_proj_gate(void);
 static int w_cam_convert(void) { return dm_cam_on() && !dm_ui_proj_gate(); }
 static int w_project(uint8_t *b, uint64_t scene, uint64_t u, float *out, int top) { int r = ((int (*)(uint64_t, uint64_t, float *, int))(b + 0x90d110))(scene, u, out, top); if (r) out[1] += dm_ui_proj_dy(); return r; }   // 这里要真实画面坐标：把界面矩形的 y 加回来（见 dm_uiscreen.c） | real picture coordinates are needed here: add the UI rectangle's y back (see dm_uiscreen.c)
+
+// ---- 佣兵位置（给 Java 层在佣兵身上画台词）----
+// 当前雇佣兵 = 客户端单位表怪物桶里类号 271 / 338 / 359 / 560 / 561 的活着的那个（同 diag.c 的 DM_TEST_MERC_HP 认法）。
+// **必须在游戏线程算**：屏幕坐标走游戏自己的「单位 → 屏幕」w_project（0x90d110），那个函数在游戏线程的栈上用，
+// 从界面线程（JNI）直接调会崩（实测闪退）。所以照 dm_chest_step / g_chest_pub 的做法：游戏线程算好放进 g_merc_pub，
+// 界面线程的 dm_merc_talk 只读这份拷贝。
+// ---- Mercenary position (so the Java layer can draw lines on him) ----
+// The current hireling = the live unit with class 271 / 338 / 359 / 560 / 561 in the monster bucket of the client unit
+// table (same identification as diag.c's DM_TEST_MERC_HP). **Must be computed on the game thread**: the screen position
+// comes from the game's own "unit -> screen" w_project (0x90d110), which runs on the game thread's stack; calling it
+// straight from the UI thread (JNI) crashed the game in testing. So, like dm_chest_step / g_chest_pub, the game thread
+// fills g_merc_pub and the UI-side dm_merc_talk only reads that copy.
+static float g_merc_pub[4];
+static void w_merc_step(void) {
+    uint8_t *b = wb(); uint64_t pl = b ? w_player() : 0, lv = pl ? w_level(pl) : 0;
+    if (!pl || !lv) { g_merc_pub[3] = 0; return; }
+    uint64_t scene = *(uint64_t *)(b + 0x2e2a698); if (!scene) { g_merc_pub[3] = 0; return; }
+    int nodes = 0; float feet[2], head[2];
+    for (int k = 0; k < 128 && nodes < 512; k++)
+        for (uint64_t u = *(uint64_t *)(b + 0x2d603a0 + 1 * 0x400 + k * 8); u && nodes < 512; u = *(uint64_t *)(u + 0x158)) {
+            nodes++; if (u < 0x10000 || (u & 7)) break;
+            uint32_t cls = *(uint32_t *)(u + 4);
+            if (cls != 271 && cls != 338 && cls != 359 && cls != 560 && cls != 561) continue;
+            if (!w_project(b, scene, u, feet, 0) || !w_project(b, scene, u, head, 1)) continue;
+            g_merc_pub[0] = feet[0]; g_merc_pub[1] = feet[1]; g_merc_pub[2] = head[1]; g_merc_pub[3] = 1; return;
+        }
+    g_merc_pub[3] = 0;
+}
+// 附近怪数 / 精英数 + 场景 id（半径 20 格；精英 = 档位 != 0，档位与名字颜色同源 dm_threat_tier）
+// Nearby monster / elite counts + level id (radius 20 cells; elite = tier != 0, the same tier as the name colour)
+void dm_ctx_set(int i, int v);   // 定义在后面（g_ctx 那块） | defined further down, next to g_ctx
+static void w_ctx_step(void) {
+    uint8_t *b = wb(); uint64_t pl = b ? w_player() : 0, lv = pl ? w_level(pl) : 0;
+    if (!pl || !lv) { dm_ctx_set(4, 0); dm_ctx_set(5, 0); return; }
+    dm_ctx_set(7, (int)(lv & 0xffffffffu));
+    int px = 0, py = 0; if (!w_unit_xy(pl, &px, &py)) return;
+    int nodes = 0, n = 0, e = 0;
+    for (int k = 0; k < 128 && nodes < 512; k++)
+        for (uint64_t u = *(uint64_t *)(b + 0x2d603a0 + 1 * 0x400 + k * 8); u && nodes < 512; u = *(uint64_t *)(u + 0x158)) {
+            nodes++; if (u < 0x10000 || (u & 7)) break;
+            uint64_t q = *(uint64_t *)(u + 0x38); if (!q) continue;
+            int ux = *(int32_t *)(q + 0x10), uy = *(int32_t *)(q + 0x14);
+            int dx = ux - px, dy = uy - py; if (dx * dx + dy * dy > 400) continue;
+            n++;
+        }
+    dm_ctx_set(4, n); dm_ctx_set(5, e);
+}
+int dm_merc_talk(float *out) {   // 界面线程：只读游戏线程发布的拷贝 | UI thread: read the copy the game thread published
+    out[0] = g_merc_pub[0]; out[1] = g_merc_pub[1]; out[2] = g_merc_pub[2]; out[3] = g_merc_pub[3];
+    return g_merc_pub[3] != 0;
+}
 static int w_in_rect(float px, float py, float cx, float cy, float w, float h, float min, float *d) {
     if (w < min) w = min; if (h < min) h = min; float dx = px - cx, dy = py - cy; if (dx < 0) dx = -dx; if (dy < 0) dy = -dy;
     if (dx > w / 2 || dy > h / 2) return 0; *d = sqrtf(dx * dx + dy * dy); return 1;
@@ -737,7 +788,18 @@ static void w_map_goal_step(void) {
 // game thread (w_chest_step, every frame) and published as offsets from the player; the UI thread
 // (dm_chest_marks, called from CamThreats through JNI) only reads that array and projects it -- walking the
 // unit table on the UI thread can read a unit freed under it, or loop while the list is relinked.
-static const uint16_t g_cont_cls[] = { 1,3,4,5,6,7,9,11,46,50,51,52,53,54,55,56,79,87,88,89,94,95,106,107,125,126,127,128,139,140,141,142,143,144,146,147,148,154,155,158,159,163,169,171,174,175,176,177,178,181,182,183,185,186,187,188,198,203,204,205,208,209,223,224,225,240,241,242,243,244,246,274,329,330,331,332,333,334,335,336,354,355,356,362,365,371,372,387,388,389,390,391,397,405,406,407,455,463,507 };
+
+// ---- 佣兵台词的环境上下文（服务端拍写血量、客户端算附近怪，界面线程只读）----
+// g_ctx 的字段：0 玩家血量‰、1 玩家上限‰、2 佣兵血量‰、3 佣兵上限‰、4 附近怪数、5 附近精英数、
+// 6 玩家当前血量（绝对值，喂药判定用）、7 场景 id 低 32 位。全部按整数存，界面线程原子读。
+// ---- Environment context for the mercenary lines (server tick writes the health, the client counts nearby
+// monsters, the UI thread only reads). Fields of g_ctx: 0 player hp per mille, 1 player max per mille, 2 merc hp per
+// mille, 3 merc max per mille, 4 nearby monsters, 5 nearby elites, 6 player current hp (absolute, for the potion
+// trigger), 7 low 32 bits of the level id. All integers, read atomically from the UI thread.
+_Atomic int g_ctx[8];
+void dm_ctx_set(int i, int v) { if (i >= 0 && i < 8) atomic_store(&g_ctx[i], v); }   // 服务端拍用 | used by the server tick
+int dm_ctx_get(int i) { return i >= 0 && i < 8 ? atomic_load(&g_ctx[i]) : 0; }
+static const uint16_t g_cont_cls[] = { 1,3,4,5,6,7,9,11,46,50,51,52,53,54,55,56,79,87,88,89,94,95,104,105,106,107,125,126,127,128,139,140,141,142,143,144,146,147,148,154,155,158,159,163,169,171,174,175,176,177,178,181,182,183,185,186,187,188,198,203,204,205,208,209,223,224,225,239,240,241,242,243,244,245,246,266,268,270,271,272,274,284,326,329,330,331,332,333,334,335,336,354,355,356,360,362,363,365,371,372,380,381,387,388,389,390,391,397,405,406,407,413,416,418,419,420,424,425,430,431,432,433,438,439,448,450,454,455,463,466,501,502,504,505,507,548,549,550,551,554,584,585 };
 static int is_container_cls(uint32_t c) { for (unsigned i = 0; i < sizeof g_cont_cls / sizeof *g_cont_cls; i++) if (g_cont_cls[i] == c) return 1; return 0; }
 int dm_ui_map_geom(float *cell); int dm_ui_minimap_rect(float r[4]); int dm_cam_map_heading(float o[4]);
 #define DM_CHEST_MAX 64
@@ -751,6 +813,8 @@ static void w_chest_step(void) {   // 游戏线程：扫单位表 → 发布相�
     dm_chest_view v; memset(&v, 0, sizeof v);
     if (pl && lv) {
         uint64_t ns = w_now_ns();
+
+
         if (lv != lv_seen) { lv_seen = lv; lv_at = ns; }
         if (ns - lv_at >= 2000000000ull) {   // 换图后 2 秒内不标：加载动画期间单位表还是旧关卡的 | 2 s of silence after a level change: the unit table still holds the old level during the load
             int px = 0, py = 0;
@@ -872,6 +936,13 @@ void dm_world_pump(void) {   // 取手柄处每帧调 | Called every frame at th
     DM_PROF(0, "w.map_mark", w_map_mark_step());
     DM_PROF(0, "w.map_goal", w_map_goal_step());
     DM_PROF(0, "w.chest", w_chest_step());
+    // 佣兵位置/环境：暂时关掉。w_project（游戏「单位→屏幕」0x90d110）在场景加载（LoadScreenPanel）那一拍会
+    // 读尚未就绪的渲染状态，实测段错误闪退（boot.log 的 bt 停在 main+0x13493c）。要用请设环境变量 DM_MERC_TALK=1。
+    // Mercenary position / environment: off for now. w_project (the game's "unit -> screen" 0x90d110) reads
+    // rendering state that is not ready yet during a level load (LoadScreenPanel) and segfaults in testing (the bt
+    // in boot.log stops at main+0x13493c). Set DM_MERC_TALK=1 to turn it back on.
+    { static int mot = -1; if (mot < 0) { const char *e = getenv("DM_MERC_TALK"); mot = e ? e[0] != '0' : 0; }
+      if (mot) { DM_PROF(0, "w.merc", w_merc_step()); DM_PROF(0, "w.ctx", w_ctx_step()); } }
     // 测试开关 DM_TEST_WORLD_TAP（及 TAP2 / TAP3 / TAP4）=<类型>:c<类号>@<拍>（或 <类型>:any@<拍> = 这一类里任意一个，物品只认地上的）：到这一拍起盯住这类单位，它一进画面就在它身体框中心落一次世界点按（走 dm_world_tap 的真实命中路径，
     // 不是直接指定目标）——Mac 宿主上验「点得中、走得到、开得了」用（iOS 包用触点脚本的 tap_unit，同一个量具）。5 秒内没进画面报一行并放弃。
     // Test switch DM_TEST_WORLD_TAP (and TAP2 / TAP3 / TAP4)=<type>:c<class>@<tick> (or <type>:any@<tick> = any one of this type, items only count when on the ground): from this tick on, watch this kind of unit, and as soon as it enters the picture drop one world tap at the center of its body box (going through the real hit path of dm_world_tap,

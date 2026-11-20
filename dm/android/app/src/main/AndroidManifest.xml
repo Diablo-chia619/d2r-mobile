@@ -6,6 +6,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- 佣兵说话要调 DeepSeek：配置文件里 key 留空时完全不联网 | mercenary chatter calls DeepSeek: no network at all when the config key is empty -->
+    <uses-permission android:name="android.permission.INTERNET" />
     <uses-feature android:name="android.hardware.vulkan.version" android:version="0x401000" android:required="true" />
     <application
         android:label="@string/dmAndroidName"

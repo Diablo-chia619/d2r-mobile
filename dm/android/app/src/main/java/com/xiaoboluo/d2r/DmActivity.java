@@ -75,6 +75,12 @@ public class DmActivity extends Activity implements SurfaceHolder.Callback, Disp
     // 画面外的怪（CamThreats）：每条 5 个数，返回条数
     // Monsters off the picture (CamThreats): 5 numbers each, returns the count
     static native int nativeCamThreats(float[] out);
+    // 佣兵位置（CamThreats 画台词用）：4 个数（脚底 x、脚底 y、头顶 y、有效），返回 1 = 有佣兵
+    // Mercenary position (used by CamThreats to draw the line): 4 numbers (feet x, feet y, head y, valid), returns 1 = there is one
+    static native int nativeMercTalk(float[] out);
+    // 佣兵台词的环境上下文（CamThreats 每帧取）：8 个整数，见 dm_world.c 的 g_ctx 注释
+    // Environment context for the mercenary lines (taken every frame by CamThreats): 8 integers, see g_ctx in dm_world.c
+    static native int nativeMercCtx(int[] out);
     // 小地图上的朝向箭头（CamThreats）：4 个数，返回 1 = 该画
     // Heading arrow on the minimap (CamThreats): 4 numbers, returns 1 = draw it
     static native int nativeCamHeading(float[] out);

@@ -1,0 +1,63 @@
+# 佣兵说话 —— 配置文件
+# Mercenary chatter - config file
+#
+# 放在手机的 files/dm/merc_talk.ini（跟 boot.log 同一个目录）
+# Place this file at files/dm/merc_talk.ini on the phone (same folder as boot.log)
+#
+# 改完不用重装游戏，下次进游戏（或回城）自动重读。
+# Edit it and it is re-read on the next game launch (or when you return to town).
+# 发版时这一份保持 key 为空，程序看到空 key 就完全不说话，也不联网。
+# Keep key empty in the shipped file: with an empty key the mod never speaks and never goes online.
+
+# ---- DeepSeek ----
+# 你的 API key（sk- 开头）。留空 = 关掉说话功能
+# Your API key (starts with sk-). Empty = the feature is off
+key=
+
+# 模型：deepseek-chat（便宜快）或 deepseek-reasoner（更聪明但慢、贵）
+# Model: deepseek-chat (cheap and fast) or deepseek-reasoner (smarter but slow and pricier)
+model=deepseek-chat
+
+# API 地址（一般不用改）
+url=https://api.deepseek.com/chat/completions
+
+# ---- 说话时机 ----
+# 两次说话之间最少隔几秒（防止刷屏）
+# Minimum seconds between two lines
+interval=25
+
+# 只在这些事件说话，逗号分隔。可选：
+# Only speak on these events, comma separated. Options:
+#   feed    给他喂药
+#   lowhp   佣兵血量低于 30%
+#   elite   附近出现精英/暗金怪
+#   levelup 升级
+#   town    回城
+events=feed,lowhp
+
+# 每行字在屏幕上停留几秒
+# How many seconds a line stays on screen
+hold=4
+
+# ---- 人设 ----
+# 语气（会拼进提示词，随便写，比如：轻松、粗犷、毒舌、忠诚、文言）
+# Tone (pasted into the prompt; free text: relaxed, gruff, snarky, loyal, classical...)
+tone=粗犷、话少、忠诚
+
+# 风格（同样拼进提示词：比如 幽默、正经、吐槽、老派佣兵口吻）
+# Style (also pasted into the prompt: humorous, serious, snarky, old-school mercenary)
+style=老派佣兵口吻，一句话，不超过 20 个字
+
+# 你希望他自称什么、怎么称呼你
+# What he calls himself and you
+self=佣兵
+you=主人
+
+# 自定义补充（会拼在提示词最后；留空就不加）
+# Extra instructions appended to the prompt (empty = none)
+extra=
+
+# ---- 调试 ----
+# 1 = 把每次请求和回复写进 boot.log（看有没有正常调通）
+# 1 = log every request and reply into boot.log (to check it works)
+debug=0

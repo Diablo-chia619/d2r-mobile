@@ -409,6 +409,18 @@ int dm_cam_map_heading(float out[4]);
 // 小地图上没开的容器标记（dm_world.c dm_chest_marks）：每 2 个 float = 屏幕归一化 x / y，返回个数；CamThreats 每帧取一次
 // Un-opened containers on the minimap (dm_world.c dm_chest_marks): 2 floats each (normalised screen x / y), returns the count
 int dm_chest_marks(float *out, int max);
+// 佣兵位置（dm_world.c dm_merc_talk）：4 个数，返回 1 = 有佣兵
+// Mercenary position (dm_world.c dm_merc_talk): 4 numbers, returns 1 = one is present
+int dm_merc_talk(float *out);
+// 佣兵台词的环境上下文（dm_world.c g_ctx）：8 个整数，界面线程只读
+// Environment context for the mercenary lines (dm_world.c g_ctx): 8 integers, read on the UI thread only
+int dm_ctx_get(int i);
+JNIEXPORT jint JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeMercCtx(JNIEnv *env, jclass cls, jintArray out) {
+    (void)cls; int buf[8]; for (int i = 0; i < 8; i++) buf[i] = dm_ctx_get(i);
+    if (out) (*env)->SetIntArrayRegion(env, out, 0, 8, buf); return 1; }
+JNIEXPORT jint JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeMercTalk(JNIEnv *env, jclass cls, jfloatArray out) {
+    (void)cls; float buf[4] = { 0, 0, 0, 0 }; int r = dm_merc_talk(buf);
+    if (out) (*env)->SetFloatArrayRegion(env, out, 0, 4, buf); return r; }
 JNIEXPORT jint JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeChestMarks(JNIEnv *env, jclass cls, jfloatArray out) {
     (void)cls; jsize len = (*env)->GetArrayLength(env, out); float buf[64 * 2]; int max = len / 2 < 64 ? len / 2 : 64;
     int n = dm_chest_marks(buf, max); if (n > 0) (*env)->SetFloatArrayRegion(env, out, 0, n * 2, buf); return n; }
