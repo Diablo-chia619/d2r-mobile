@@ -1,6 +1,27 @@
 # D2R Mobile
 
-> **This repository is a fork.** The changes behind my self-built Android package (bundled Turnip driver, chronicle-aware save import, touch-stick feel, side-by-side install) are documented in **[OWN-CHANGES.zh-CN.md](OWN-CHANGES.zh-CN.md)** (Chinese, with an English summary at the end). Builds: [Releases](https://github.com/Diablo-chia619/d2r-mobile/releases). Only the APK is published here; no game content is included.
+
+<details open>
+<summary><b>Fork enhancements — this build / 自编增强 — 本版内容</b></summary>
+
+> This fork adds the features below on top of the upstream build. **No game content is bundled** — bring your own files.
+> 本 fork 在官方版基础上加了以下功能，**不含任何游戏内容**，使用者需自备导入包。
+
+| Feature / 功能 | Description / 说明 |
+|---|---|
+| **Ammo on skill buttons** / 技能钮显示剩余弹药 | Shows the remaining ammo of the equipped quiver or throwing weapon; every quiver in the inventory counts / 装备箭袋或投掷武器时显示剩余弹量；背包里所有箭袋都算 |
+| **Adreno 8xx top-band fix** / Adreno 8xx 顶部黑块修复 | **Community fix by @yyan160 (PR #268)** — compute shaders return at once outside the dispatched range; verified on our device (OnePlus Ace 5 Pro / Adreno 830) / **社区实现（@yyan160 的 PR #268）** —— 计算着色器在派出范围外直接返回；我们在真机（一加 Ace 5 Pro / Adreno 830）验证 |
+| **Touch stick feel** / 摇杆手感 | Full speed in 30 points instead of 60, square-root curve / 满速行程 60 → 30 点，平方根曲线 |
+| **Rejuv potions in the pouch** / 百宝囊（紫瓶） | Belt full → not auto-picked; a manual pickup goes into the pouch; tap the small / full rejuv icon to move one bottle into the belt (stays in the inventory if the belt is full); the Deposit button is an icon (language-independent) / 腰带满时不自动捡；手动捡进囊；点小紫 / 大紫图标取一瓶补进腰带（腰带满则留背包）；存放按钮改成跨语言图标 |
+| **Chronicle upgrade on store (testing)** / 编年史自动比较暗金（测试中） | Storing a unique / set item that already exists in the Chronicle compares the two stat by stat: if the new one rolled better it replaces the old one and the old item drops back into the inventory; if not, the new one stays in the inventory. **Currently under test — please try it and report back** / 存入与编年史同款的暗金或套装时逐条属性比较：新件更好则替换（旧件自动回背包），否则保留旧件、新件留在背包。**目前还在测试中，希望大家帮忙测，有问题欢迎反馈** |
+| **Unopened containers on the minimap** / 小地图标未开的箱子 | Chests, baskets and hidden stashes you have not opened yet are marked with a gold square on the minimap and vanish the instant you open them; decorations such as torches, fog and lamps are never marked / 没开的箱子、篮子、隐藏储物点在小地图上标成金块，一开就消失；火把、雾、灯这类装饰不标 |
+
+**Not included / 不包含**: GPU drivers such as Turnip, Mesa or adrenotools — this build uses the system driver. / Turnip、Mesa、adrenotools 等驱动 —— 本版走系统驱动。
+
+Releases: https://github.com/Diablo-chia619/d2r-mobile/releases
+
+</details>
+
 **An open-source compatibility layer for Diablo II: Resurrected with the Reign of the Warlock expansion, for iOS, macOS, Android and HarmonyOS.** It brings the Nintendo Switch release you bought, expansion included, to iPhone, iPad and Mac in full: the original game code runs natively, every control is rebuilt for touch, the frame rate holds at 60 fps, and you are in a game one second after the main menu. There is now a native macOS version as well (first version): on an Apple silicon Mac it starts on double-click and works with keyboard, mouse and gamepad. **Since v2.0 there is an Android version** (community port): the same game program executes natively on ARM64 Android phones, with the graphics reimplemented on Vulkan; on a Snapdragon 8+ Gen 1 phone the camp and the Den of Evil and Cow Level fights all run at a median 60 fps (see "Android" below); a HarmonyOS version runs on the same engine (community port: an unsigned shell from the Releases page that you re-sign yourself, nothing to build; see "HarmonyOS"). Apple TV 4K (3rd generation, A15) has a community port (developer preview) that has reached the character-selection screen only on its author's device; see the device table below.
 
 This is not a tech demo that "sort of runs". It is a mobile version polished for daily play, from your first character all the way through the endgame.
@@ -148,7 +169,6 @@ Enter through the red portal in Harrogath after completing Hell. There are 100 l
 | Valuable drop alerts | High runes and Unique items raise a light beam and land with a different drop sound; the phone vibrates at one of three strengths — light, medium or heavy — according to value |
 | Runeword helper | Long-press a socketed base to list the Runewords it can make and their stats; once you have the runes, socket them all in one tap |
 | Minimap guidance | Every map marks its Waypoint and exits, labelled "Waypoint" and with the name of the area each entrance leads to (iOS / Mac); every quest goal is on the map; when a target is off screen, its name is written along the screen edge |
-| Unopened containers | Chests, baskets and hidden stashes you have not opened yet are marked with a gold square on the minimap and vanish the instant you open them; decorations such as torches, fog and lamps are never marked (Android, 2.4.0+) |
 | Chores removed | Free identification, free Town Portal with no scrolls needed, spawning right beside the Waypoint, Quick Restart, refreshable vendor stock, free and unlimited respecs at Akara |
 | Saves | Saved immediately when you switch apps, swipe the app away or quit; iCloud sync across devices (requires signing with a paid developer account) |
 | Entertainment mode (experimental) | Over-the-shoulder and first-person camera: drag the right half to look around, arrows for monsters off the picture, a facing pointer on the map ([details](docs/over-the-shoulder-camera.md); contributed with [@yyan160](https://github.com/yyan160), [#165](https://github.com/jhaizhou-ops/d2r-mobile/pull/165)) |

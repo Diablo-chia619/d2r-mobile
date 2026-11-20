@@ -87,7 +87,13 @@ void dm_potpick_step(uint8_t *b) {
         if (abs(x - px) > PICK_R || abs(y - py) > PICK_R) continue;
         { int dm_lootfilter_hidden(uint8_t *, uint64_t); if (dm_lootfilter_hidden(b, it)) continue; }   // 被原版掉落过滤藏着的（屏上没名字）不自动捡 | items hidden by the game's loot filter (no name on screen) are not auto-picked
         int (*is)(uint64_t, int) = (int (*)(uint64_t, int))(b + 0x574bc0);
-        if (!(is(it, 77) || is(it, 78)) || !(((int (*)(uint64_t))(b + 0x3c1b28))(it) & 1)) continue;   // 回复 hpot 77（恢复药 rpot 的父类型也是它）/ 法力 mpot 78 | Healing hpot 77 (also the parent type of the rejuvenation potion rpot) / mana mpot 78
+        uint32_t pc = ((uint32_t (*)(uint64_t))(b + 0x570260))(it) & 0xffffffu;   // 紫瓶不算 hpot/mpot（rpot 只在父类型表里，实测 0x574bc0 不认它），单独认
+        int rejuv = pc == 0x737672u || pc == 0x6c7672u;   // rvs / rvl
+        if (!rejuv && (!(is(it, 77) || is(it, 78)) || !(((int (*)(uint64_t))(b + 0x3c1b28))(it) & 1))) continue;   // 回复 hpot 77 / 法力 mpot 78；紫瓶单独认
+        {   // 腰带没有空位就不捡（原版腰带找位 0x561de0）：紫瓶也一样——腰带满了留给玩家手动捡
+            // Belt has no free slot -> do not pick up (original belt slot finder 0x561de0); same for rejuv: with a full belt it is left for the player to pick up by hand
+            uint64_t inv0 = *(uint64_t *)(pl + 0x90); uint32_t slot0 = 0;
+            if (!inv0 || !((int (*)(uint64_t, uint64_t, uint32_t *, int))(b + 0x561de0))(inv0, it, &slot0, 1)) continue; }
         uint32_t id = *(uint32_t *)(it + 8); int seen = 0;
         for (int i = 0; i < 8; i++) if (g_tried[i] == id && fr - g_tried_fr[i] < 120) seen = 1;
         if (seen) continue;
