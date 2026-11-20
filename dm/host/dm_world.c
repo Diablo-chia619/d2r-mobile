@@ -394,6 +394,18 @@ int dm_merc_say_take(char *out, int cap) {   // 服务端拍 | server tick
     atomic_store(&g_say_r, r + 1);
     return 1;
 }
+// 安全读一块内存：process_vm_readv 指向自己，坏指针返回 0 而不是崩
+// Safe memory read via process_vm_readv on our own process: a bad pointer returns 0 instead of crashing
+#include <sys/uio.h>
+#include <sys/types.h>
+#include <unistd.h>
+// bionic 在 _GNU_SOURCE 下才声明它，这里显式声明一份 | bionic declares it only with _GNU_SOURCE, so declare it here
+extern long process_vm_readv(pid_t pid, const struct iovec *local_iov, unsigned long liovcnt,
+                             const struct iovec *remote_iov, unsigned long riovcnt, unsigned long flags);
+int dm_safe_read(uint64_t addr, void *out, unsigned long n) {
+    struct iovec l = { out, n }, r = { (void *)(uintptr_t)addr, n };
+    return process_vm_readv(getpid(), &l, 1, &r, 1, 0) == (ssize_t)n;
+}
 static void w_merc_step(void) {
     uint8_t *b = wb(); uint64_t pl = b ? w_player() : 0, lv = pl ? w_level(pl) : 0;
     if (!pl || !lv) { g_merc_pub[3] = 0; return; }
@@ -410,6 +422,12 @@ static void w_merc_step(void) {
     if (!w_unit_xy(pl, &px0, &py0) || (!px0 && !py0)) { g_merc_pub[3] = 0; return; }
     uint64_t scene = *(uint64_t *)(b + 0x2e2a698); if (!scene) { g_merc_pub[3] = 0; return; }
     int nodes = 0; float feet[2], head[2];
+    // 玩家的附属单位表（物品栏 +0x68，同 adv_stash_unit 的走法）：佣兵是附属单位，不在怪物桶里
+    // The player's attached-unit table (inventory +0x68, the same walk as adv_stash_unit): the mercenary is an
+    // attached unit, not a monster-bucket entry
+    { uint64_t inv = *(uint64_t *)(pl + 0x90); int k2 = 0;
+      for (uint64_t en = inv ? *(uint64_t *)(inv + 0x68) : 0; en && k2 < 32; en = *(uint64_t *)(en + 0x10), k2++)
+          LOG("附属单位：id %u 类 %u", *(const uint32_t *)en, *(const uint8_t *)(en + 0xa)); }
     for (int k = 0; k < 128 && nodes < 512; k++)
         for (uint64_t u = *(uint64_t *)(b + 0x2d603a0 + 1 * 0x400 + k * 8); u && nodes < 512; u = *(uint64_t *)(u + 0x158)) {
             nodes++; if (u < 0x10000 || (u & 7)) break;
@@ -429,21 +447,31 @@ static void w_merc_step(void) {
             // 560-561 Barbarian) so the model does not invent a shield for an archer
             dm_ctx_set(15, (int)cls);
             dm_ctx_set(16, (int)*(const uint32_t *)(u + 0xb0));   // 佣兵名字序号（名表 merc01..merc41）| merc name ordinal
-            // 诊断：dump 佣兵单位前 0x40 字节，找名字字符串指针（真名，聊天栏要显示「[游戏] 艾希拉：…」）
-            // Diagnostics: dump the first 0x40 bytes of the mercenary unit to locate the name string pointer
+            // 名字探测：单位里所有指针，凡是指向一小段可读 UTF-8（ASCII 或中文）的，全部打出来 ——
+            // 名字可能已经被解析成中文串（「安諾」），而不是 mercNN 这个键
+            // Name probe: every pointer in the unit that points at a short readable UTF-8 string (ASCII or Chinese);
+            // the name may already be resolved to 「安諾」 rather than the mercNN key
             { static uint64_t dn; uint64_t ns3 = w_now_ns(); if (ns3 - dn > 5000000000ull) { dn = ns3;
-                const uint64_t *q2 = (const uint64_t *)u;
-                LOG("佣兵单位 %llx: %016llx %016llx %016llx %016llx %016llx %016llx %016llx %016llx",
-                    (unsigned long long)u, (unsigned long long)q2[0], (unsigned long long)q2[1],
-                    (unsigned long long)q2[2], (unsigned long long)q2[3], (unsigned long long)q2[4],
-                    (unsigned long long)q2[5], (unsigned long long)q2[6], (unsigned long long)q2[7]);
-                // 名字索引候选：+0x40..+0x100 里 0..60 的小整数（佣兵名表 merca1xx 的序号）
-                // Name index candidates: small ints 0..60 in +0x40..+0x100 (the ordinal into the merc name table)
-                { char b2[400]; int p2 = 0; const uint8_t *raw = (const uint8_t *)u;
-                  for (int off = 0x100; off < 0x340 && p2 < 340; off += 4) {
-                      uint32_t v = *(const uint32_t *)(raw + off);
-                      if (v <= 60) p2 += snprintf(b2 + p2, sizeof b2 - (size_t)p2, "+%x=%u ", off, v); }
-                  b2[p2 < 340 ? p2 : 339] = 0; LOG("佣兵小整数：%s", b2); } } }
+                char buf[40]; char hits[420]; int hp2 = 0;
+                for (int off = 0; off < 0x400 && hp2 < 380; off += 8) {
+                    uint64_t pv = *(const uint64_t *)((const uint8_t *)u + off);
+                    if (pv < 0x10000 || pv > 0x00007fffffffffffULL) continue;
+                    if (!dm_safe_read(pv, buf, sizeof buf)) continue;
+                    buf[39] = 0;
+                    unsigned char c0 = (unsigned char)buf[0];
+                    int ok = c0 >= 0x20 && c0 < 0x7f ? 1 : (c0 >= 0xc0 ? 2 : 0);   // 1 = ASCII 开头，2 = 多字节 UTF-8 开头
+                    if (!ok) continue;
+                    int printable = 1, len = 0;
+                    for (int i = 0; i < 39 && buf[i]; i++) {
+                        unsigned char c = (unsigned char)buf[i];
+                        if (c < 0x20 || c == 0x7f) { printable = 0; break; }
+                        len++;
+                    }
+                    if (!printable || len < 2 || len > 30) continue;
+                    hp2 += snprintf(hits + hp2, sizeof hits - (size_t)hp2, "+%x=%s | ", off, buf);
+                }
+                hits[hp2 < 380 ? hp2 : 379] = 0;
+                LOG("佣兵可读串：%s", hits[0] ? hits : "（没找到）"); } }
             return;
         }
     g_merc_pub[3] = 0;
