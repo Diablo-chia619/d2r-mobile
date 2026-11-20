@@ -24,6 +24,7 @@
 #include "vulkan_present.h"
 #include "vk_runtime.h"
 #include "touch_android.h"
+#include "front_android.h"
 #include "lifecycle_dispatch.h"
 #include "overlay_validate.h"
 #include "dm_overlay_contract.h"
@@ -39,6 +40,7 @@ void front_android_set_window(void *win, int w, int h);
 void front_android_set_refresh(float hz);
 int dm_main(int argc, char **argv);
 void front_android_boot_failed(int code);
+void dm_sharelog_init(void (*cb)(void));   // dm/host/diag.c
 
 static char g_files[1024], g_ext[1024], g_src[1024], g_runtime[1100];
 static FILE *g_logf;
@@ -193,6 +195,15 @@ static int overlay_variant(const char *overlay, char *out, size_t n) {
     return 0;
 }
 
+// 暂停菜单「分享诊断日志」（#216）：按钮发 PanelManager:ClosePanel:TouchShareLog，宿主（dm/host/diag.c）在游戏主线程调这里；交给 Java 打文件、弹分享面板
+// The pause menu's Share Diagnostics (#216): the button sends PanelManager:ClosePanel:TouchShareLog and the host (dm/host/diag.c) calls this
+// on the game main thread; Java builds the file and shows the share sheet
+static void share_log(void) {
+    char p[1200]; snprintf(p, sizeof p, "%s/boot.log", g_runtime);
+    LOG("诊断日志：玩家点了分享，交给系统分享面板");
+    front_android_share_log(p);
+}
+
 JNIEXPORT jint JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeStart(JNIEnv *env, jclass cls, jstring files, jstring ext, jstring src, jstring lang) {
     (void)cls;
     static int started; if (started) return 0;
@@ -209,6 +220,7 @@ JNIEXPORT jint JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeStart(JNIEnv *env
     if (access(p, R_OK)) snprintf(g_runtime, sizeof g_runtime, "%s/dm", g_ext);
     mkdirs(g_runtime);
     log_init();
+    dm_sharelog_init(share_log);
     load_env_file(g_runtime);
     dm_vk_set_internal_dir(g_files);
     LOG("boot: 内部目录 %s，外部目录 %s，资源 %s，系统语言 %s", g_files, g_ext, g_src, lg);
