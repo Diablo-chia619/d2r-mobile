@@ -416,8 +416,8 @@ int dm_merc_talk(float *out);
 // Environment context for the mercenary lines (dm_world.c g_ctx): 8 integers, read on the UI thread only
 int dm_ctx_get(int i);
 JNIEXPORT jint JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeMercCtx(JNIEnv *env, jclass cls, jintArray out) {
-    (void)cls; int buf[8]; for (int i = 0; i < 8; i++) buf[i] = dm_ctx_get(i);
-    if (out) (*env)->SetIntArrayRegion(env, out, 0, 8, buf); return 1; }
+    (void)cls; int buf[16]; for (int i = 0; i < 16; i++) buf[i] = dm_ctx_get(i);
+    if (out) (*env)->SetIntArrayRegion(env, out, 0, 16, buf); return 1; }
 JNIEXPORT jint JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeMercTalk(JNIEnv *env, jclass cls, jfloatArray out) {
     (void)cls; float buf[4] = { 0, 0, 0, 0 }; int r = dm_merc_talk(buf);
     if (out) (*env)->SetFloatArrayRegion(env, out, 0, 4, buf); return r; }

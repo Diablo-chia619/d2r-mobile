@@ -32,7 +32,7 @@ final class CamThreats extends View implements Choreographer.FrameCallback {
     // 佣兵台词：位置每帧取一次（nativeMercTalk），台词由 MercTalk 生成
     // Mercenary chatter: the position is fetched every frame (nativeMercTalk), the line comes from MercTalk
     private final float[] merc = new float[4];
-    private final int[] ctx = new int[8];
+    private final int[] ctx = new int[16];
     private int mercOn, mercDrawn;
     private String talkLine;
     private final MercTalk talk;

@@ -406,6 +406,9 @@ static void w_ctx_step(void) {
     if (!pl || !lv) { dm_ctx_set(4, 0); dm_ctx_set(5, 0); return; }
     dm_ctx_set(7, (int)(lv & 0xffffffffu));
     int px = 0, py = 0; if (!w_unit_xy(pl, &px, &py)) return;
+    // 附近怪物的种类直方图（按类号归并，最多记 8 种，最后取数量最多的三种交给界面层去查名字）
+    // Histogram of nearby monster kinds by class id (up to 8 kinds; the three most numerous are handed to the UI)
+    struct { uint32_t cls; int n; } kind[8]; int nk = 0;
     int nodes = 0, n = 0, e = 0;
     for (int k = 0; k < 128 && nodes < 512; k++)
         for (uint64_t u = *(uint64_t *)(b + 0x2d603a0 + 1 * 0x400 + k * 8); u && nodes < 512; u = *(uint64_t *)(u + 0x158)) {
@@ -414,8 +417,24 @@ static void w_ctx_step(void) {
             int ux = *(int32_t *)(q + 0x10), uy = *(int32_t *)(q + 0x14);
             int dx = ux - px, dy = uy - py; if (dx * dx + dy * dy > 400) continue;
             n++;
+            // 精英 = TypeFlag 里的超级独特 / 冠军 / 独特位（hle_target.c 的 TF_*，名字颜色同源）
+            // Elite = the super-unique / champion / unique bits in TypeFlag (hle_target.c's TF_*, same source as the name colour)
+            { uint64_t td = *(uint64_t *)(u + 0x10);
+              if (td >= 0x10000) { uint8_t fl = *(uint8_t *)(td + 0x1a); if (fl & 0x0e) e++; } }
+            { uint32_t cls = *(uint32_t *)(u + 4); int f = -1;
+              for (int i = 0; i < nk; i++) if (kind[i].cls == cls) { f = i; break; }
+              if (f >= 0) kind[f].n++; else if (nk < 8) { kind[nk].cls = cls; kind[nk].n = 1; nk++; } }
         }
     dm_ctx_set(4, n); dm_ctx_set(5, e);
+    // 取数量最多的三种（8 种以内简单选择，代价可忽略）
+    // The three most numerous kinds (simple selection over at most 8 entries)
+    for (int slot = 0; slot < 3; slot++) {
+        int best = -1;
+        for (int i = 0; i < nk; i++) if (kind[i].n > 0 && (best < 0 || kind[i].n > kind[best].n)) best = i;
+        if (best < 0) { dm_ctx_set(8 + slot, 0); dm_ctx_set(11 + slot, 0); continue; }
+        dm_ctx_set(8 + slot, (int)kind[best].cls); dm_ctx_set(11 + slot, kind[best].n);
+        kind[best].n = 0;
+    }
 }
 int dm_merc_talk(float *out) {   // 界面线程：只读游戏线程发布的拷贝 | UI thread: read the copy the game thread published
     out[0] = g_merc_pub[0]; out[1] = g_merc_pub[1]; out[2] = g_merc_pub[2]; out[3] = g_merc_pub[3];
@@ -807,9 +826,9 @@ static void w_map_goal_step(void) {
 // monsters, the UI thread only reads). Fields of g_ctx: 0 player hp per mille, 1 player max per mille, 2 merc hp per
 // mille, 3 merc max per mille, 4 nearby monsters, 5 nearby elites, 6 player current hp (absolute, for the potion
 // trigger), 7 low 32 bits of the level id. All integers, read atomically from the UI thread.
-_Atomic int g_ctx[8];
-void dm_ctx_set(int i, int v) { if (i >= 0 && i < 8) atomic_store(&g_ctx[i], v); }   // 服务端拍用 | used by the server tick
-int dm_ctx_get(int i) { return i >= 0 && i < 8 ? atomic_load(&g_ctx[i]) : 0; }
+_Atomic int g_ctx[16];
+void dm_ctx_set(int i, int v) { if (i >= 0 && i < 16) atomic_store(&g_ctx[i], v); }   // 服务端拍用 | used by the server tick
+int dm_ctx_get(int i) { return i >= 0 && i < 16 ? atomic_load(&g_ctx[i]) : 0; }
 static const uint16_t g_cont_cls[] = { 1,3,4,5,6,7,9,11,46,50,51,52,53,54,55,56,79,87,88,89,94,95,104,105,106,107,125,126,127,128,139,140,141,142,143,144,146,147,148,154,155,158,159,163,169,171,174,175,176,177,178,181,182,183,185,186,187,188,198,203,204,205,208,209,223,224,225,239,240,241,242,243,244,245,246,266,268,270,271,272,274,284,326,329,330,331,332,333,334,335,336,354,355,356,360,362,363,365,371,372,380,381,387,388,389,390,391,397,405,406,407,413,416,418,419,420,424,425,430,431,432,433,438,439,448,450,454,455,463,466,501,502,504,505,507,548,549,550,551,554,584,585 };
 static int is_container_cls(uint32_t c) { for (unsigned i = 0; i < sizeof g_cont_cls / sizeof *g_cont_cls; i++) if (g_cont_cls[i] == c) return 1; return 0; }
 int dm_ui_map_geom(float *cell); int dm_ui_minimap_rect(float r[4]); int dm_cam_map_heading(float o[4]);

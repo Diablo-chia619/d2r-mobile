@@ -34,8 +34,8 @@ final class MercTalk {
     // 环境（宿主填）：0 玩家血量‰ 1 玩家上限 2 佣兵血量‰ 3 佣兵上限 4 附近怪数 5 附近精英数 6 玩家当前血量 7 场景 id
     // Environment (filled by the host): 0 player hp per mille, 1 player max, 2 merc hp per mille, 3 merc max,
     // 4 nearby monsters, 5 nearby elites, 6 player current hp, 7 level id
-    private final int[] ctx = new int[8];
-    private int lastHp = -1, lastLv = -1, lastMon = -1;
+    private final int[] ctx = new int[16];
+    private int lastPm = -1, lastLv = -1, lastMon = -1, eliteDrawn = -1;
     private String pendingWhy;
 
     // 最近说过的几句（拼进提示词要求不重复） | the last few lines, put into the prompt so it does not repeat
@@ -100,17 +100,20 @@ final class MercTalk {
         if (line != null) line = null;
 
         // 事件，优先级从高到低 | events, highest priority first
+        // 喝药用「千分比涨了 6% 以上」判（按绝对值判的话高等级角色喝小药水不触发），且必须在掉血之后回血
+        // The potion test uses "per mille rose by 6% or more" (an absolute threshold misses small potions on a high
+        // level character) and only counts as healing after having lost life
         String why = null;
         int hp = ctx[6], pm = ctx[0], mm = ctx[2], mon = ctx[4], elite = ctx[5], lv = ctx[7];
-        if (lastHp > 0 && hp > lastHp + 40 && pm > 0 && pm < 990) why = "刚喝完一瓶药水，血回上来了";
-        else if (pm > 0 && pm < 300 && lastHp >= 0 && pm < lastHp) why = "主人血量告急，快撑不住了";
+        if (lastPm > 0 && pm > lastPm + 60 && pm < 990) why = "刚喝完一瓶药水，血回上来了";
+        else if (pm > 0 && pm < 300 && lastPm >= 0 && pm < lastPm) why = "主人血量告急，快撑不住了";
         else if (mm > 0 && mm < 300) why = "你自己（佣兵）快被打死了";
-        else if (elite > 0 && (lastMon != mon || lastEventAt == 0)) why = "附近有精英怪";
+        else if (elite > 0 && eliteDrawn != elite) why = "附近有精英怪（" + elite + " 只）";
         else if (lastLv != -1 && lv != lastLv) why = "刚走到一个新地方";
-        else if (mon >= 8 && lastMon < 8) why = "一拥而上，怪很多（" + mon + " 只）";
+        else if (mon > lastMon + 4 && mon >= 6) why = "一拥而上，怪很多（" + mon + " 只）";
         else if (now - lastEventAt > interval * 1000L) why = "随口念叨一句";
 
-        lastHp = hp; lastLv = lv; lastMon = mon;
+        lastPm = pm; lastLv = lv; lastMon = mon; eliteDrawn = elite;
         if (why == null || busy) return null;
         lastEventAt = now; pendingWhy = why;
         ask();
@@ -121,9 +124,21 @@ final class MercTalk {
         busy = true;
         final StringBuilder env = new StringBuilder();
         env.append("此刻：");
-        if (ctx[0] > 0) env.append("主人血量 ").append(ctx[0] / 10).append("%，");
+        if (ctx[0] > 0) env.append("玩家血量 ").append(ctx[0] / 10).append("%，");
         if (ctx[2] > 0) env.append("你的血量 ").append(ctx[2] / 10).append("%，");
-        if (ctx[4] > 0) env.append("附近 ").append(ctx[4]).append(" 只怪物，");
+        // 附近有哪几种怪（类号查 MonNames，最多三种），模型自己决定要不要提它们、提哪只
+        // Which kinds of monsters are nearby (class id looked up in MonNames, up to three); the model decides
+        // whether to mention them and which one
+        StringBuilder kinds = new StringBuilder();
+        for (int i = 0; i < 3; i++) {
+            int n = ctx[11 + i]; if (n <= 0) continue;
+            String nm = MonNames.get(ctx[8 + i]);
+            if (nm == null) continue;
+            if (kinds.length() > 0) kinds.append("、");
+            kinds.append(nm).append(" ").append(n).append(" 只");
+        }
+        if (kinds.length() > 0) env.append("附近有 ").append(kinds).append("，");
+        else if (ctx[4] > 0) env.append("附近有 ").append(ctx[4]).append(" 只怪，");
         if (ctx[5] > 0) env.append("其中 ").append(ctx[5]).append(" 只是精英，");
         env.append("。");
         final StringBuilder hist = new StringBuilder();
@@ -132,12 +147,20 @@ final class MercTalk {
             for (String s : recent) hist.append("「").append(s).append("」");
             hist.append("。");
         }
-        final String prompt = "你是暗黑破坏神2里跟随玩家冒险的一名" + self + "。"
+        // 说话方式：不固定称呼、不固定句式，让它像真人一样在吐槽 / 提醒 / 闲聊 / 自言自语之间自己挑。
+        // 用户要求「不要总是主人主人地叫」「根据游戏实时内容调整」——所以只给情境和数据，让它自己决定说什么
+        // How it talks: no fixed form of address, no fixed pattern; it picks between griping, warning, small talk and
+        // thinking aloud like a real person. The user asked not to keep saying "master" and to react to what is
+        // actually happening, so we give it the situation and the numbers and let it choose what to say
+        final String prompt = "你是暗黑破坏神2里跟着玩家一起冒险的一名" + self + "，一路上会自己嘀咕、吐槽、提醒、闲聊。"
                 + "语气：" + tone + "。风格：" + style + "。"
                 + (extra != null && extra.length() > 0 ? extra + "。" : "")
-                + "现在的情况：" + (pendingWhy == null ? "随口念叨" : pendingWhy) + "。" + env
+                + "刚才发生的事：" + (pendingWhy == null ? "没什么特别的" : pendingWhy) + "。" + env
                 + hist
-                + "说一句符合此刻情境的话，称呼玩家为" + you + "。"
+                + "要求："
+                + (you != null && you.length() > 0 ? "偶尔可以叫他「" + you + "」，但不要每句都这么开头；" : "不要用固定称呼开头；")
+                + "说一句你现在真想说的话，可以是吐槽、抱怨、提醒、感慨、随口闲聊，别每句都一个套路；"
+                + "不要解说画面、不要念数据、不要像客服；"
                 + "只输出这句话本身：不要引号、不要解释、不要表情符号、不要重复上面说过的话。";
         new Thread(new Runnable() {
             public void run() {
