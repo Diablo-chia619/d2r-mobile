@@ -868,10 +868,18 @@ static void hud_tick(uint64_t G) {        // 每拍：受控玩家等级 / 本�
         // Player health for the mercenary lines: reuse the read above (the game's own stat getter, with the gear
         // accumulative layer). It was previously written as a call through G + 0x5b9290, but G is the game state
         // pointer, not the module base, so it jumped to a wrong address and segfaulted (bt at main+0x13493c)
-        // 佣兵台词进聊天栏：界面线程入队，这里出队交给原版系统提示（只许服务端线程调）
-        // Mercenary lines into the chat bar: queued by the UI thread, taken here and handed to the original system notice
-        { int dm_merc_say_take(char *, int); void dm_game_notice(uint8_t *, const char *); char line[160];
-          while (dm_merc_say_take(line, (int)sizeof line)) dm_game_notice(mm ? mm->base : NULL, line); }
+        // 佣兵台词进聊天栏：界面线程入队，这里出队，只发聊天栏那一行（不弹系统提示框），
+        // 前缀用佣兵自己的称呼（按类号：罗格 / 沙漠佣兵 / 铁狼 / 野蛮人），看起来像他在说话
+        // Mercenary lines into the chat bar: queued by the UI thread, taken here, chat bar line only (no notice box),
+        // prefixed with his own name by class id so it reads as him speaking
+        { int dm_merc_say_take(char *, int); int dm_ctx_get(int); void dm_chat_line(uint8_t *, const char *);
+          char line[160], buf[200];
+          while (dm_merc_say_take(line, (int)sizeof line)) {
+              const char *nm = "佣兵";
+              switch (dm_ctx_get(15)) { case 271: nm = "罗格"; break; case 338: nm = "沙漠佣兵"; break;
+                  case 359: nm = "铁狼"; break; case 560: case 561: nm = "野蛮人"; break; }
+              snprintf(buf, sizeof buf, "%s：%s", nm, line);
+              dm_chat_line(mm ? mm->base : NULL, buf); } }
         { void dm_ctx_set(int, int);
           dm_ctx_set(0, h.hp_max > 0 ? (int)((long long)h.hp * 1000 / h.hp_max) : 0);
           dm_ctx_set(1, h.hp_max); dm_ctx_set(6, h.hp);
