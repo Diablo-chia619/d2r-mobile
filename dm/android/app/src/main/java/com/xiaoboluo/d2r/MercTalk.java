@@ -28,6 +28,9 @@ final class MercTalk {
     // Vertical offset of the bubble from his head as a fraction of the screen height (positive = lower)
     private float bubbleDy = 0f;
     private String tone = "", style = "", self = "佣兵", you = "主人", extra = "";
+    // 聊天栏里显示的名字：配置里填了就优先用（佣兵真名按单位字段读不出来，让它自己填最快）
+    // Name shown in the chat bar: whatever the config says wins (the real name could not be read out of the unit)
+    private String mercName = "";
     private String line;
     private volatile long lastLineAt;
     private long lastEventAt;
@@ -83,6 +86,7 @@ final class MercTalk {
                 else if (k.equals("self")) self = v;
                 else if (k.equals("you")) you = v;
                 else if (k.equals("extra")) extra = v;
+                else if (k.equals("name")) mercName = v;
             }
         } catch (Exception e) {
             if (debug > 0) Log.w(TAG, "读配置失败：" + e);
@@ -204,7 +208,7 @@ final class MercTalk {
                     // his head and in the chat log
                     // 聊天栏那一行用他的真名（名表序号在 ctx[16]），查不到才退回「佣兵」
                     // The chat bar line uses his real name (name ordinal in ctx[16]), falling back to 佣兵
-                    String who = MercNames.get(ctx[16]);
+                    String who = mercName != null && mercName.length() > 0 ? mercName : MercNames.get(ctx[16]);
                     try { DmActivity.nativeMercSay((who != null ? who : "佣兵") + "：" + t); } catch (Throwable ignored) { }
                     recent.add(t);
                     while (recent.size() > 5) recent.remove(0);

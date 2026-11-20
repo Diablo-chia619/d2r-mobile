@@ -440,7 +440,7 @@ static void w_merc_step(void) {
                 // 名字索引候选：+0x40..+0x100 里 0..60 的小整数（佣兵名表 merca1xx 的序号）
                 // Name index candidates: small ints 0..60 in +0x40..+0x100 (the ordinal into the merc name table)
                 { char b2[400]; int p2 = 0; const uint8_t *raw = (const uint8_t *)u;
-                  for (int off = 0x40; off < 0x100 && p2 < 340; off += 4) {
+                  for (int off = 0x100; off < 0x340 && p2 < 340; off += 4) {
                       uint32_t v = *(const uint32_t *)(raw + off);
                       if (v <= 60) p2 += snprintf(b2 + p2, sizeof b2 - (size_t)p2, "+%x=%u ", off, v); }
                   b2[p2 < 340 ? p2 : 339] = 0; LOG("佣兵小整数：%s", b2); } } }
