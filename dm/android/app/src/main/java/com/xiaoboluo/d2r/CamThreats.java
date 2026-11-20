@@ -32,7 +32,7 @@ final class CamThreats extends View implements Choreographer.FrameCallback {
     // 佣兵台词：位置每帧取一次（nativeMercTalk），台词由 MercTalk 生成
     // Mercenary chatter: the position is fetched every frame (nativeMercTalk), the line comes from MercTalk
     private final float[] merc = new float[4];
-    private final int[] ctx = new int[16];
+    private final int[] ctx = new int[20];
     private int mercOn, mercDrawn;
     private String talkLine;
     private final MercTalk talk;
@@ -180,7 +180,9 @@ final class CamThreats extends View implements Choreographer.FrameCallback {
             // 距离远近都由下面这个比例把关，不再依赖投影返回的头顶像素
             // Raise from the feet coordinate (merc[2] is the projected head-top y, which measured a bit off from where
             // the text should sit): lift by a fraction of the screen height, which holds at any distance
-            float x = merc[0], y = merc[1] - h * 0.16f;
+            // 用投影给的真实头顶（merc[2]），再加配置里的微调偏移（bubble_dy，屏高比例）
+            // Use the real head-top from the projection (merc[2]) plus the configurable nudge (bubble_dy)
+            float x = merc[0], y = merc[2] - fs * 0.35f + h * talk.bubbleDy();
             if (y < fs * 2) y = fs * 2;
             if (x < fs * 2) x = fs * 2; if (x > w - fs * 2) x = w - fs * 2;
             if (y < fs * 2) y = fs * 2;

@@ -35,6 +35,10 @@ interval=25
 #   town    回城
 events=feed,lowhp
 
+# 气泡相对佣兵头顶的上下偏移（屏幕高度比例：正数往下、负数往上；0 = 正好在头顶）
+# Vertical nudge of the bubble from his head as a fraction of screen height (positive = lower)
+bubble_dy=0
+
 # 每行字在屏幕上停留几秒
 # How many seconds a line stays on screen
 hold=4

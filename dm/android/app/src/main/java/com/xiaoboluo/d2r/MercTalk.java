@@ -24,6 +24,9 @@ final class MercTalk {
 
     private String key = "", model = "deepseek-chat", url = "https://api.deepseek.com/chat/completions";
     private int interval = 12, hold = 4, debug = 0;
+    // 气泡相对头顶的上下偏移（屏幕高度比例；正数往下、负数往上），用户自己微调
+    // Vertical offset of the bubble from his head as a fraction of the screen height (positive = lower)
+    private float bubbleDy = 0f;
     private String tone = "", style = "", self = "佣兵", you = "主人", extra = "";
     private String line;
     private volatile long lastLineAt;
@@ -34,7 +37,7 @@ final class MercTalk {
     // 环境（宿主填）：0 玩家血量‰ 1 玩家上限 2 佣兵血量‰ 3 佣兵上限 4 附近怪数 5 附近精英数 6 玩家当前血量 7 场景 id
     // Environment (filled by the host): 0 player hp per mille, 1 player max, 2 merc hp per mille, 3 merc max,
     // 4 nearby monsters, 5 nearby elites, 6 player current hp, 7 level id
-    private final int[] ctx = new int[16];
+    private final int[] ctx = new int[20];
     private int lastPm = -1, lastLv = -1, lastMon = -1, eliteDrawn = -1, lastMp = -1;
     private String pendingWhy;
 
@@ -74,6 +77,7 @@ final class MercTalk {
                 else if (k.equals("interval")) interval = parseInt(v, interval);
                 else if (k.equals("hold")) hold = parseInt(v, hold);
                 else if (k.equals("debug")) debug = parseInt(v, 0);
+                else if (k.equals("bubble_dy")) bubbleDy = parseFloat(v, 0f);
                 else if (k.equals("tone")) tone = v;
                 else if (k.equals("style")) style = v;
                 else if (k.equals("self")) self = v;
@@ -198,7 +202,10 @@ final class MercTalk {
                     // 同时也丢进游戏聊天栏（原版系统提示一行「[游戏] …」），头顶气泡 + 聊天记录双通道
                     // Also drop it into the game's chat bar (an original system notice line), so it shows both above
                     // his head and in the chat log
-                    try { DmActivity.nativeMercSay(t); } catch (Throwable ignored) { }
+                    // 聊天栏那一行用他的真名（名表序号在 ctx[16]），查不到才退回「佣兵」
+                    // The chat bar line uses his real name (name ordinal in ctx[16]), falling back to 佣兵
+                    String who = MercNames.get(ctx[16]);
+                    try { DmActivity.nativeMercSay((who != null ? who : "佣兵") + "：" + t); } catch (Throwable ignored) { }
                     recent.add(t);
                     while (recent.size() > 5) recent.remove(0);
                     if (debug > 0) Log.i(TAG, "佣兵说（" + pendingWhy + "）：" + t);
@@ -252,6 +259,12 @@ final class MercTalk {
             case 560: case 561: return "第五幕的野蛮人，近战，用剑或斧";
             default: return null;
         }
+    }
+
+    float bubbleDy() { return bubbleDy; }
+
+    private static float parseFloat(String s, float d) {
+        try { return Float.parseFloat(s.trim()); } catch (Exception e) { return d; }
     }
 
     private static int parseInt(String s, int d) {

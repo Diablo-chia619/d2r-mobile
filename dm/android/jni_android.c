@@ -421,8 +421,8 @@ JNIEXPORT void JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeMercSay(JNIEnv *e
     const char *t = (*env)->GetStringUTFChars(env, s, NULL);
     if (t) { dm_merc_say(t); (*env)->ReleaseStringUTFChars(env, s, t); } }
 JNIEXPORT jint JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeMercCtx(JNIEnv *env, jclass cls, jintArray out) {
-    (void)cls; int buf[16]; for (int i = 0; i < 16; i++) buf[i] = dm_ctx_get(i);
-    if (out) (*env)->SetIntArrayRegion(env, out, 0, 16, buf); return 1; }
+    (void)cls; int buf[20]; for (int i = 0; i < 20; i++) buf[i] = dm_ctx_get(i);
+    if (out) (*env)->SetIntArrayRegion(env, out, 0, 20, buf); return 1; }
 JNIEXPORT jint JNICALL Java_com_xiaoboluo_d2r_DmActivity_nativeMercTalk(JNIEnv *env, jclass cls, jfloatArray out) {
     (void)cls; float buf[4] = { 0, 0, 0, 0 }; int r = dm_merc_talk(buf);
     if (out) (*env)->SetFloatArrayRegion(env, out, 0, 4, buf); return r; }

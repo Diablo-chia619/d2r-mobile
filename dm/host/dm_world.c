@@ -417,11 +417,33 @@ static void w_merc_step(void) {
             if (cls != 271 && cls != 338 && cls != 359 && cls != 560 && cls != 561) continue;
             if (!w_project(b, scene, u, feet, 0) || !w_project(b, scene, u, head, 1)) continue;
             g_merc_pub[0] = feet[0]; g_merc_pub[1] = feet[1]; g_merc_pub[2] = head[1]; g_merc_pub[3] = 1;
+            // 诊断：脚底 / 头顶的屏幕像素，用来把气泡放到头顶（界面层按脚底 y 抬多少要看这组数）
+            // Diagnostics: feet / head screen pixels, used to place the bubble on his head
+            { static uint64_t dl; uint64_t ns2 = w_now_ns(); if (ns2 - dl > 3000000000ull) { dl = ns2;
+                int rw = 0, rh = 0; dm_screen_real(&rw, &rh);
+                LOG("佣兵屏幕：脚底 %.0f,%.0f 头顶 %.0f,%.0f 身高差 %.0f 屏 %dx%d",
+                    feet[0], feet[1], head[0], head[1], feet[1] - head[1], rw, rh); } }
             // 佣兵类号 = 他的职业（271 罗格弓手 / 338 沙漠战士 / 359 铁狼法师 / 560·561 野蛮人），
             // 交给台词层，免得模型自己瞎猜「你举着盾」（罗格是弓手，没有盾）
             // Mercenary class id = his profession (271 Rogue archer / 338 Desert Mercenary / 359 Iron Wolf caster /
             // 560-561 Barbarian) so the model does not invent a shield for an archer
             dm_ctx_set(15, (int)cls);
+            dm_ctx_set(16, (int)*(const uint32_t *)(u + 0xb0));   // 佣兵名字序号（名表 merc01..merc41）| merc name ordinal
+            // 诊断：dump 佣兵单位前 0x40 字节，找名字字符串指针（真名，聊天栏要显示「[游戏] 艾希拉：…」）
+            // Diagnostics: dump the first 0x40 bytes of the mercenary unit to locate the name string pointer
+            { static uint64_t dn; uint64_t ns3 = w_now_ns(); if (ns3 - dn > 5000000000ull) { dn = ns3;
+                const uint64_t *q2 = (const uint64_t *)u;
+                LOG("佣兵单位 %llx: %016llx %016llx %016llx %016llx %016llx %016llx %016llx %016llx",
+                    (unsigned long long)u, (unsigned long long)q2[0], (unsigned long long)q2[1],
+                    (unsigned long long)q2[2], (unsigned long long)q2[3], (unsigned long long)q2[4],
+                    (unsigned long long)q2[5], (unsigned long long)q2[6], (unsigned long long)q2[7]);
+                // 名字索引候选：+0x40..+0x100 里 0..60 的小整数（佣兵名表 merca1xx 的序号）
+                // Name index candidates: small ints 0..60 in +0x40..+0x100 (the ordinal into the merc name table)
+                { char b2[400]; int p2 = 0; const uint8_t *raw = (const uint8_t *)u;
+                  for (int off = 0x40; off < 0x100 && p2 < 340; off += 4) {
+                      uint32_t v = *(const uint32_t *)(raw + off);
+                      if (v <= 60) p2 += snprintf(b2 + p2, sizeof b2 - (size_t)p2, "+%x=%u ", off, v); }
+                  b2[p2 < 340 ? p2 : 339] = 0; LOG("佣兵小整数：%s", b2); } } }
             return;
         }
     g_merc_pub[3] = 0;
@@ -853,9 +875,9 @@ static void w_map_goal_step(void) {
 // monsters, the UI thread only reads). Fields of g_ctx: 0 player hp per mille, 1 player max per mille, 2 merc hp per
 // mille, 3 merc max per mille, 4 nearby monsters, 5 nearby elites, 6 player current hp (absolute, for the potion
 // trigger), 7 low 32 bits of the level id. All integers, read atomically from the UI thread.
-_Atomic int g_ctx[16];
-void dm_ctx_set(int i, int v) { if (i >= 0 && i < 16) atomic_store(&g_ctx[i], v); }   // 服务端拍用 | used by the server tick
-int dm_ctx_get(int i) { return i >= 0 && i < 16 ? atomic_load(&g_ctx[i]) : 0; }
+_Atomic int g_ctx[20];
+void dm_ctx_set(int i, int v) { if (i >= 0 && i < 20) atomic_store(&g_ctx[i], v); }   // 服务端拍用 | used by the server tick
+int dm_ctx_get(int i) { return i >= 0 && i < 20 ? atomic_load(&g_ctx[i]) : 0; }
 static const uint16_t g_cont_cls[] = { 1,3,4,5,6,7,9,11,46,50,51,52,53,54,55,56,79,87,88,89,94,95,104,105,106,107,125,126,127,128,139,140,141,142,143,144,146,147,148,154,155,158,159,163,169,171,174,175,176,177,178,181,182,183,185,186,187,188,198,203,204,205,208,209,223,224,225,239,240,241,242,243,244,245,246,266,268,270,271,272,274,284,326,329,330,331,332,333,334,335,336,354,355,356,360,362,363,365,371,372,380,381,387,388,389,390,391,397,405,406,407,413,416,418,419,420,424,425,430,431,432,433,438,439,448,450,454,455,463,466,501,502,504,505,507,548,549,550,551,554,584,585 };
 static int is_container_cls(uint32_t c) { for (unsigned i = 0; i < sizeof g_cont_cls / sizeof *g_cont_cls; i++) if (g_cont_cls[i] == c) return 1; return 0; }
 int dm_ui_map_geom(float *cell); int dm_ui_minimap_rect(float r[4]); int dm_cam_map_heading(float o[4]);
