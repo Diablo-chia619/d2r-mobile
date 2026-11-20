@@ -239,8 +239,24 @@ static uint32_t adv_stash_unit(uint64_t pl) {   // 玩家自己的高级仓库�
     return 0;
 }
 static void move_to_stash(uint8_t *b, uint64_t G, uint64_t player, uint32_t id, uint32_t unit) {   // 原版「移到仓库」0x63：服务端代发，照收包函数 0x632510 的做法调用期间 [G+0x19050] = 1（同 diag.c DM_TEST_GIVE_INV） | The original game's "move to stash" 0x63: sent by the server on the player's behalf; following what the packet receive function 0x632510 does, [G+0x19050] = 1 during the call (same as DM_TEST_GIVE_INV in diag.c)
-    uint8_t pk[25] = { 0x63 }; memcpy(pk + 5, &id, 4); memcpy(pk + 9, &unit, 4);
+    // [1] 必须是 1：服务端 main+0x6d0d10 用它查跳转表（0x1db1198，ldrb + br），0 落在表外、跳进错误分支。
+    // 原版客户端在 main+0x39d7e4 处发的就是 [1]=1 / [5]=物品 id / [9]=高级仓库单位，其余 0。
+    // [1] must be 1: the server handler main+0x6d0d10 indexes a jump table (0x1db1198, ldrb + br) with
+    // packet[1]; 0 falls outside the table and branches into the wrong code. The original client
+    // (main+0x39d7e4) sends [1]=1 / [5]=item id / [9]=advanced-stash unit, the rest 0.
+    uint8_t pk[25] = { 0x63 }; uint32_t one = 1; memcpy(pk + 1, &one, 4); memcpy(pk + 5, &id, 4); memcpy(pk + 9, &unit, 4);
     *(uint32_t *)(G + 0x19050) = 1; ((void (*)(uint64_t, uint64_t, uint8_t *, uint32_t))(b + 0x6e5b40))(G, player, pk, 25); *(uint32_t *)(G + 0x19050) = 0;
+}
+// 主线程（客户端）发同一条 0x63：走游戏自己的发包函数 main+0x2ceab0，服务端在它自己那一拍按原版规则收包。
+// 不再从服务端拍直接跳收包处理函数——那样是重入，「刚合成的物品」走这条路实测会把游戏打崩。
+// The same 0x63 sent from the main thread (client) through the game's own packet send main+0x2ceab0, so the
+// server takes it in its own tick under the original rules. We no longer jump into the packet handler from the
+// server tick: that re-enters the server, and a freshly crafted item on that path crashed the game (measured).
+static void stash63_send(uint32_t id, uint32_t unit) {
+    uint8_t pk[25]; memset(pk, 0, sizeof pk); pk[0] = 0x63; uint32_t one = 1;
+    memcpy(pk + 1, &one, 4); memcpy(pk + 5, &id, 4); memcpy(pk + 9, &unit, 4);
+    ((void (*)(const uint8_t *, int))(B + 0x2ceab0))(pk, 25);
+    LOG("存放：物品 id %u → 客户端发原版移到仓库（高级仓库单位 %u）", id, unit);
 }
 
 // ---- 仓库页里新落下的符文 / 宝石 / 材料自动转进高级仓库（珍宝匣）：玩家把它们拖进个人页 / 共享页的格子、或按住确认键移到当前页，落下后由这里代发原版「移到仓库」。
@@ -410,7 +426,7 @@ static void auto_pick(uint64_t pl, uint64_t fr) {
 // ---- 存放：一件一件做
 // ---- Deposit: done one item at a time
 typedef struct { uint32_t id, code; uint8_t to_vault, page, cmp, cmp_req; uint64_t cmp_fr; } sitem;   // page：这件原来在哪一页（0 背包 / 3 魔盒）；cmp = 同款要先比较再决定存不存 | page: which page this item was originally on (0 inventory / 3 Horadric Cube); cmp = a duplicate that must be compared before deciding
-static sitem g_st[128]; static int g_nst, g_ist = -1, g_sv, g_sg, g_sp, g_sleft, g_snear; static int g_sfull, g_sworse; static uint64_t g_sfr;   // g_sfull 背包不足换不了 / g_sworse 不如编年史那件 | g_sfull: no room to swap; g_sworse: worse than the stored one
+static sitem g_st[128]; static int g_nst, g_ist = -1, g_sv, g_sg, g_sp, g_sleft, g_snear; static int g_sfull, g_sworse; static uint64_t g_sfr; static uint32_t g_sunit; static int g_sadv;   // g_sfull 背包不足换不了 / g_sworse 不如编年史那件；g_sunit / g_sadv = 高级仓库单位、有没有（store_begin 算一次，store_step 发客户端 0x63 时用） | g_sfull: no room to swap; g_sworse: worse than the stored one; g_sunit / g_sadv: advanced-stash unit and whether the player has one (computed in store_begin, used by the client-side 0x63 in store_step)
 static _Atomic int g_store_req, g_pouch_tap, g_rejuv_req;   // g_rejuv_req：1 = 点了小紫框，2 = 点了大紫框 | 1 = small rejuv box tapped, 2 = full rejuv box tapped
 static char g_notice[160]; static _Atomic int g_notice_req;
 void dm_pouch_notice(const char *text) {   // 借用「存放」那条提示通道（服务端拍发原版系统提示），别的功能往这里塞话 | reuse the deposit notice channel (the server tick posts the original system notice)
@@ -429,6 +445,7 @@ static void store_begin(uint64_t pl) {
     int cmp_on = vault_compare_on();
     int ncube = 0;
     g_nst = 0; g_sv = g_sg = g_sp = g_sleft = g_sfull = g_sworse = 0; int vault = dm_vault_ready(), adv = adv_stash_unit(pl) != 0; g_snear = atomic_load(&g_near_pub);
+    g_sadv = adv; g_sunit = adv ? adv_stash_unit(pl) : 0;   // 存起高级仓库单位：store_step 在客户端发 0x63 时用 | remember the advanced-stash unit id for the client-side 0x63 in store_step
     uint64_t inv = *(uint64_t *)(pl + 0x90), it = inv && *(uint32_t *)inv == 0x01020304 ? *(uint64_t *)(inv + 0x10) : 0;
     for (int k = 0; it && k < 2048 && g_nst < 128; k++) { uint64_t d = *(uint64_t *)(it + 0x10); if (!d) break;
         // 来源页：背包（页 0）全套规则；魔盒（页 3）只搬已鉴定的暗金 / 套装进编年史——魔盒里的符文 / 宝石不动：
@@ -465,7 +482,9 @@ static void store_step(uint64_t pl, uint64_t fr) {
             if (diff <= 0) { if (s->page == 0) g_sworse++; LOG("编年史：新的不如旧件（%d）→ 不替换", diff); g_ist++; g_sfr = 0; return; }
             LOG("编年史：新的比旧件好（%d）→ 替换，旧件回背包", diff); s->cmp = 0; }
         if (!g_sfr) { if (!it) { g_ist++; return; }   // 已经不在背包（玩家自己挪了） | No longer in the inventory (the player moved it)
-            if (s->to_vault) { if (dm_vault_put_pending()) return; dm_vault_request_deposit(s->id); } else absorb_push(s->id);
+            if (s->to_vault) { if (dm_vault_put_pending()) return; dm_vault_request_deposit(s->id); }
+            else if (g_snear && g_sadv) stash63_send(s->id, g_sunit);   // 符文 / 宝石在高级仓库旁：主线程客户端发 0x63（不走服务端拍代发，避重入） | rune / gem at the stash: the main thread sends the original 0x63 itself (no server-side re-entry)
+            else absorb_push(s->id);
             g_sfr = fr; return; }
         if (!it) { if (s->to_vault) g_sv++; else if (g_snear) g_sg++; else g_sp++; g_ist++; g_sfr = 0; return; }
         if (fr - g_sfr > (!s->to_vault && g_snear ? 240 : 120)) {   // 储藏箱旁：服务端等 2 秒没进仓库才收回囊里，这边多等一会儿，别抢在它前面判「留在背包」 | next to the stash: the server waits 2 seconds and only takes it back into the pouch if it has not entered the stash, so wait a little longer here and do not judge "stays in the inventory" ahead of it
