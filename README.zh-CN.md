@@ -13,6 +13,7 @@
 | **摇杆手感** / Touch stick feel | 满速行程 60 → 30 点，平方根曲线 / Full speed in 30 points instead of 60, square-root curve |
 | **百宝囊（紫瓶）** / Rejuv potions in the pouch | 腰带满时不自动捡；手动捡进囊；点小紫 / 大紫图标取一瓶补进腰带（腰带满则留背包）；存放按钮改成跨语言图标 / Belt full → not auto-picked; a manual pickup goes into the pouch; tap the icon to move one bottle into the belt (stays in the inventory if the belt is full); the Deposit button is an icon |
 | **编年史自动比较暗金** / **Chronicle upgrade on store**（**测试中 / testing**） | 存入与编年史同款的暗金、套装时逐条属性比较：**新的更好 → 替换**（旧件自动回背包）；**旧的更好 → 不存**（新件留背包）。原来是无条件存入。**目前还在测试中，希望大家帮忙测，判断错了欢迎反馈** / Storing a unique / set item that already exists in the Chronicle now compares them stat by stat: **better → replaces** (old item drops back into the inventory); **worse → not stored** (new item stays in the inventory). **Currently under test — please try it and report back** |
+| **小地图标注未开的箱子** / Uneaten container marks on the minimap | 还没开的容器在小地图上标成金色小方块：箱子、木桶、瓮、罐、篮子、尸体、武器架 / 护甲架、墓、囚困的灵魂、地狱柱等；跟「小地图标注」开关走 / Marks every container you have not opened yet with a gold square on the minimap — chests, barrels, urns, jars, baskets, corpses, weapon / armor racks, tombs, trapped souls, hell pillars and more; follows the "minimap marks" switch |
 
 **不包含 / Not included**: 驱动（Turnip / Mesa / adrenotools）—— 本版走系统驱动。/ GPU drivers — this build uses the system driver.
 
