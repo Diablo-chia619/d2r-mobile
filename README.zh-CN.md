@@ -14,7 +14,7 @@
 | **摇杆手感** / Touch stick feel | 满速行程 60 → 30 点，平方根曲线 / Full speed in 30 points instead of 60, square-root curve |
 | **百宝囊（紫瓶）** / Rejuv potions in the pouch | 腰带满时不自动捡；手动捡进囊；点小紫 / 大紫图标取一瓶补进腰带（腰带满则留背包）；存放按钮改成跨语言图标 / Belt full → not auto-picked; a manual pickup goes into the pouch; tap the icon to move one bottle into the belt (stays in the inventory if the belt is full); the Deposit button is an icon |
 | **编年史自动比较暗金** / **Chronicle upgrade on store**（**测试中 / testing**） | 存入与编年史同款的暗金、套装时逐条属性比较：**新的更好 → 替换**（旧件自动回背包）；**旧的更好 → 不存**（新件留背包）。原来是无条件存入。**目前还在测试中，希望大家帮忙测，判断错了欢迎反馈** / Storing a unique / set item that already exists in the Chronicle now compares them stat by stat: **better → replaces** (old item drops back into the inventory); **worse → not stored** (new item stays in the inventory). **Currently under test — please try it and report back** |
-| **小地图标未开的箱子** / Unopened containers on the minimap | 没开的箱子、篮子、隐藏储物点在小地图上标成金块，一开就消失；火把、雾、灯这类装饰不标 / Chests, baskets and hidden stashes you have not opened yet are marked with a gold square and vanish the instant you open them; decorations such as torches, fog and lamps are never marked |
+| **小地图标未开的箱子** / Unopened containers on the minimap | 没开的容器在小地图上标成金块、一开就消失：箱子、木桶、瓮、罐、篮子、藏匿物、尸体、武器架 / 护甲架、石棺与墓、囚困的灵魂、地狱柱等；火把、雾、灯、神坛、门这类装饰不标 / Every container you have not opened yet gets a gold square on the minimap and the square vanishes the instant you open it: chests, barrels, urns, jars, baskets, hidden stashes, corpses, weapon / armor racks, sarcophagi and tombs, trapped souls, hell pillars and more; decorations such as torches, fog, lamps, shrines and doors are never marked |
 
 **不包含 / Not included**: 驱动（Turnip / Mesa / adrenotools）—— 本版走系统驱动。/ GPU drivers — this build uses the system driver.
 
