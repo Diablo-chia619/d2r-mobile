@@ -238,13 +238,34 @@ static uint32_t adv_stash_unit(uint64_t pl) {   // 玩家自己的高级仓库�
     for (uint64_t en = inv ? *(uint64_t *)(inv + 0x68) : 0; en && k < 32; en = *(uint64_t *)(en + 0x10), k++) if (*(uint8_t *)(en + 0xa) == 1) return *(uint32_t *)en;
     return 0;
 }
+// 诊断（DM_STASH_DIAG=1）：每 5 秒把物品栏 +0x68 挂的附属单位逐个打出来（id / 类 / +8 标志），再到服务端单位表里取它的类型和仓库层级（+0x1bd），
+// 并试着解出页结构 +0x2d0 的容量。用来判「0x63 自动移到仓库被拒」到底是发错了单位，还是那一页不够大。
+// Diagnostics (DM_STASH_DIAG=1): every 5 s, print each attached unit at inventory +0x68 (id / class / byte at +8), then look it up in the
+// server unit table for its type and stash level (+0x1bd), and try to resolve the page struct's +0x2d0 capacity. Tells apart "we send the
+// wrong unit" from "that page is too small" when the game rejects the 0x63 auto move-to-stash.
+static void stash_diag(uint8_t *b, uint64_t G, uint64_t player, uint32_t tq) {
+    static int env = -2; if (env == -2) { const char *e = getenv("DM_STASH_DIAG"); env = e && e[0] != '0'; }
+    if (!env) return;
+    static uint32_t last; if (last && tq - last < 125) return; last = tq;
+    uint64_t inv = *(uint64_t *)(player + 0x90); int k = 0;
+    for (uint64_t en = inv ? *(uint64_t *)(inv + 0x68) : 0; en && k < 32; en = *(uint64_t *)(en + 0x10), k++) {
+        uint32_t uid = *(uint32_t *)en; int cls = *(uint8_t *)(en + 0xa), fl = *(uint8_t *)(en + 8);
+        uint64_t u = *(uint64_t *)(G + 0x2230 + (uint64_t)(uid & 0x7f) * 8);
+        for (int j = 0; u && j < 4096; j++) { if (*(uint32_t *)(u + 8) == uid) break; u = *(uint64_t *)(u + 0x158); }
+        uint32_t ty = u ? *(uint32_t *)u : 0xffffffffu, lv = u ? *(uint8_t *)(u + 0x1bd) : 0xff;
+        uint64_t pg = 0; int cap = -1;
+        if (u && lv >= 1 && lv <= 3) { uint64_t pp = *(uint64_t *)(b + 0x2d64a18 + (uint64_t)lv * 16);
+            if (pp > 0x10000 && (pp & 7) == 0) { pg = pp; cap = *(int32_t *)(pp + 0x2d0); } }
+        LOG("高级仓库诊断：附属单位 %u 类 %d 标志 %d → 服务端单位 %p 类型 %u 层级 %u 页 %p 容量 %d", uid, cls, fl, (void *)u, ty, lv, (void *)pg, cap); }
+    LOG("高级仓库诊断：附属单位 %d 个；adv_stash_unit=%u", k, adv_stash_unit(player));
+}
 static void move_to_stash(uint8_t *b, uint64_t G, uint64_t player, uint32_t id, uint32_t unit) {   // 原版「移到仓库」0x63：服务端代发，照收包函数 0x632510 的做法调用期间 [G+0x19050] = 1（同 diag.c DM_TEST_GIVE_INV） | The original game's "move to stash" 0x63: sent by the server on the player's behalf; following what the packet receive function 0x632510 does, [G+0x19050] = 1 during the call (same as DM_TEST_GIVE_INV in diag.c)
-    // [1] 必须是 1：服务端 main+0x6d0d10 用它查跳转表（0x1db1198，ldrb + br），0 落在表外、跳进错误分支。
-    // 原版客户端在 main+0x39d7e4 处发的就是 [1]=1 / [5]=物品 id / [9]=高级仓库单位，其余 0。
-    // [1] must be 1: the server handler main+0x6d0d10 indexes a jump table (0x1db1198, ldrb + br) with
-    // packet[1]; 0 falls outside the table and branches into the wrong code. The original client
-    // (main+0x39d7e4) sends [1]=1 / [5]=item id / [9]=advanced-stash unit, the rest 0.
-    uint8_t pk[25] = { 0x63 }; uint32_t one = 1; memcpy(pk + 1, &one, 4); memcpy(pk + 5, &id, 4); memcpy(pk + 9, &unit, 4);
+    // [1] = 0：原版自己「双击 / 移到仓库」发的就是 0（真机录包：63 00000000 <物品id> <单位> 0…），服务端按它选分支。
+    // 写成 1 会走另一条分支：包收下了但什么都不做——这就是 2.4.x 里「符文宝石永远存不进、提示这一格已放满」的真正原因。
+    // [1] = 0: the original client's own double-click / move-to-stash sends 0 (captured on device: 63 00000000 <item id> <unit> 0...), and
+    // the server picks its branch by it. Sending 1 takes another branch: the packet is accepted and nothing happens -- that is exactly why
+    // runes / gems never reached the stash in 2.4.x and the misleading "that stack is full" notice showed up.
+    uint8_t pk[25] = { 0x63 }; memcpy(pk + 5, &id, 4); memcpy(pk + 9, &unit, 4);
     *(uint32_t *)(G + 0x19050) = 1; ((void (*)(uint64_t, uint64_t, uint8_t *, uint32_t))(b + 0x6e5b40))(G, player, pk, 25); *(uint32_t *)(G + 0x19050) = 0;
 }
 // 主线程（客户端）发同一条 0x63：走游戏自己的发包函数 main+0x2ceab0，服务端在它自己那一拍按原版规则收包。
@@ -253,8 +274,8 @@ static void move_to_stash(uint8_t *b, uint64_t G, uint64_t player, uint32_t id, 
 // server takes it in its own tick under the original rules. We no longer jump into the packet handler from the
 // server tick: that re-enters the server, and a freshly crafted item on that path crashed the game (measured).
 static void stash63_send(uint32_t id, uint32_t unit) {
-    uint8_t pk[25]; memset(pk, 0, sizeof pk); pk[0] = 0x63; uint32_t one = 1;
-    memcpy(pk + 1, &one, 4); memcpy(pk + 5, &id, 4); memcpy(pk + 9, &unit, 4);
+    uint8_t pk[25]; memset(pk, 0, sizeof pk); pk[0] = 0x63;   // [1] = 0，同原版双击（见 move_to_stash 的注释） | [1] = 0, same as the original double-click (see move_to_stash)
+    memcpy(pk + 5, &id, 4); memcpy(pk + 9, &unit, 4);
     ((void (*)(const uint8_t *, int))(B + 0x2ceab0))(pk, 25);
     LOG("存放：物品 id %u → 客户端发原版移到仓库（高级仓库单位 %u）", id, unit);
 }
@@ -320,6 +341,11 @@ void dm_pouch_c2s(uint64_t *regs) {   // regs：x0 游戏、x1 玩家、x2 包�
     // Gamepad "hold the confirm button to move to the current page" (a touch double-tap on a non-stackable item is the same thing): the item stays in the backpack and never goes onto the cursor -- personal page 0x54 [item id]... (21 bytes), shared page 0x55 [item id][shared page unit]... (29 bytes), as recorded.
     // When one of the three item kinds takes this path, the whole packet is replaced with the original "move to stash" 0x63 (backpack source); when the stack is full it is not replaced and lands on the page the player chose as usual (the shared page case shows a hint here, the personal page case is hinted after stash_sweep sends once and it does not go in)
     if ((len == 21 && pk[0] == 0x54) || (len == 29 && pk[0] == 0x55)) { uint32_t id; memcpy(&id, pk + 1, 4);
+        {   // 诊断：把客户端原始的 0x54 / 0x55 包整条打出来；DM_TROVE_PASS=1 时放行原包、不做改写（验「双击存仓库」原生到底能不能成）
+            // Diagnostics: log the client's original 0x54 / 0x55 packet; with DM_TROVE_PASS=1 let it through unrewritten (verifies whether the native double-click store works)
+            static int dg = -2, pass = -2; if (dg == -2) { const char *e = getenv("DM_TROVE_DIAG"); dg = e && e[0] != '0'; e = getenv("DM_TROVE_PASS"); pass = e && e[0] != '0'; }
+            if (dg) { char hx[3 * 32 + 1]; int k = 0; for (uint32_t i = 0; i < len && i < 32; i++) k += snprintf(hx + k, sizeof hx - (size_t)k, "%02x", pk[i]); hx[k] = 0; LOG("珍宝匣诊断：客户端原始包 len %u [%s]", len, hx); }
+            if (pass) return; }
         uint64_t dm_diag_srv_item(uint32_t); uint64_t it = dm_diag_srv_item(id); if (!it || !bag_item(player, id) || !(is_rune_gem(it) || is_mat(it))) return;
         uint32_t unit = adv_stash_unit(player); int near = ((int (*)(uint64_t, uint64_t, int, int))(B + 0x650d10))(G, player, 0x10b, 0x32) & 1; if (!unit || !near) return;
         uint32_t code = item_code(it);
@@ -659,6 +685,7 @@ void dm_pouch_srv_tick(uint8_t *b, uint64_t G, uint64_t player) {
     int near = ((int (*)(uint64_t, uint64_t, int, int))(b + 0x650d10))(G, player, 0x10b, 0x32) & 1; atomic_store(&g_near_pub, near);
     if (!near && g_nfail) { g_nfail = 0; LOG("百宝囊：离开储藏箱 → 清除「存不进」名单，下次开箱重新试"); }   // 原版「移到仓库」用的同一个判断：50 以内有储藏箱物件 267 | The same check the original game's "move to stash" uses: a stash object 267 within 50
     uint32_t unit = adv_stash_unit(player); int go63 = near && unit;
+    if (atomic_load(&g_stash_open)) stash_diag(b, G, player, tq);
     {   // 紫瓶框：从百宝囊取一瓶放进背包，再交给原版的喝药路径（g_use → 腰带/背包分支自己组 0x26）。背包放不下就不取、提示一次
         // Rejuv box: take one bottle from the pouch into the inventory, then hand it to the original drink path (g_use -> the belt / inventory branch builds the 0x26 packet). No room: take nothing and log once
         int r = atomic_exchange(&g_rejuv_req, 0);
